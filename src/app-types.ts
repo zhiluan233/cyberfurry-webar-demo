@@ -34,6 +34,16 @@ export interface DemoConfig {
       updateIntervalMilliseconds: number;
       maximumDepthMeters: number;
       maximumEdgeDeltaMeters: number;
+      retainWorldMesh: boolean;
+      snapshotTranslationMeters: number;
+      snapshotRotationDegrees: number;
+      retentionDistanceMeters: number;
+      maximumRetainedAreaSquareMeters: number;
+      maximumSnapshots: number;
+      overlapRemovalEnabled: boolean;
+      overlapDistanceMeters: number;
+      overlapNormalAngleDegrees: number;
+      overlapSpatialCellMeters: number;
     };
   };
 }

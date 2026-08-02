@@ -36,11 +36,21 @@
     "planeDetection": true,
     "depthMesh": {
       "enabled": true,
-      "sampleColumns": 16,
-      "sampleRows": 12,
+      "sampleColumns": 20,
+      "sampleRows": 18,
       "updateIntervalMilliseconds": 1000,
       "maximumDepthMeters": 3.5,
-      "maximumEdgeDeltaMeters": 0.25
+      "maximumEdgeDeltaMeters": 0.25,
+      "retainWorldMesh": true,
+      "snapshotTranslationMeters": 0.45,
+      "snapshotRotationDegrees": 15,
+      "retentionDistanceMeters": 20,
+      "maximumRetainedAreaSquareMeters": 250,
+      "maximumSnapshots": 164,
+      "overlapRemovalEnabled": true,
+      "overlapDistanceMeters": 0.1,
+      "overlapNormalAngleDegrees": 45,
+      "overlapSpatialCellMeters": 0.18
     }
   }
 }
