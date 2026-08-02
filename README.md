@@ -12,12 +12,12 @@
 - PC 调试场景中使用 WASD 移动自由相机，拖动画面转向，Q/E 升降。
 - 画面中央发射射线，命中位置显示世界空间光标。
 - “放置角色”会尝试创建 WebXR Anchor，并把角色生成在光标上方后让其落地。
-- 手动、跟随玩家、实时跟随光标、走到按钮点击瞬间的光标点四种模式。
+- 手动、跟随玩家、实时跟随光标、走到光标点四种模式。
 - Plane Detection 生成平面碰撞网格。
-- CPU Depth Sensing 生成低分辨率实时三角网格，作为碰撞和深度遮挡代理。
+- CPU Depth Sensing 生成低分辨率实时三角网格，作为碰撞和深度遮挡 Agent。
 - 深度不可用时自动退化为 Plane Detection / Hit Test 锚点地板碰撞。
 - 调试菜单可调整胶囊半径、高度、移动速度，并显示碰撞网格。
-- 不支持 AR 时自动显示 low-poly 自然场景，AR 启动按钮仍会保留。
+- 不支持 AR 时自动显示 low-poly 默认场景，AR 启动按钮仍会保留。
 
 ## 运行
 
@@ -39,15 +39,15 @@ npm run preview
 
 - 支持 ARCore 的 Android 设备。
 - Google Chrome 和 Google Play Services for AR 已更新。
-- 页面运行于 HTTPS 安全上下文。
+- 页面运行于 HTTPS 且证书有效。
 
-局域网的普通 HTTP 地址不能启动 WebXR。开发时可以使用 HTTPS 部署，也可以通过 USB 使用 ADB 把电脑端口映射为手机的 `localhost`：
+局域网的普通 HTTP 地址不能启动 WebXR。开发时可以使用 HTTPS 部署，也可以通过 USB 使用 ADB 把电脑端口映射：
 
 ```bash
 adb reverse tcp:5173 tcp:5173
 ```
 
-然后在手机 Chrome 打开 `http://localhost:5173`。浏览器把 localhost 视作安全上下文。
+然后在手机 Chrome 打开 `http://localhost:5173`。
 
 ## 自定义 VRMA 动画
 
