@@ -23,8 +23,11 @@ export class XREnvironment {
   private latestXRHit: XRHitTestResult | undefined;
   private anchor: XRAnchor | null = null;
   private debugVisible = false;
+  private depthFailureCount = 0;
+  private depthDisabledForSession = false;
   private readonly centerRaycaster = new THREE.Raycaster();
   private readonly temporaryMatrix = new THREE.Matrix4();
+  private readonly temporaryDepthPoint = new THREE.Vector3();
 
   constructor(private readonly scene: THREE.Scene, private readonly config: DemoConfig) {
     this.group.name = 'XR environment geometry';
@@ -117,6 +120,9 @@ export class XREnvironment {
     this.planeCount = 0;
     this.depthTriangleCount = 0;
     this.depthAvailable = false;
+    this.depthFailureCount = 0;
+    this.depthDisabledForSession = false;
+    this.lastDepthUpdate = -Infinity;
   }
 
   private updateCursor(
@@ -235,81 +241,109 @@ export class XREnvironment {
 
   private updateDepthMesh(time: number, frame: XRFrame, referenceSpace: XRReferenceSpace): void {
     const settings = this.config.environment.depthMesh;
-    if (!settings.enabled || !frame.getDepthInformation || time - this.lastDepthUpdate < settings.updateIntervalMilliseconds) return;
+    if (
+      !settings.enabled
+      || this.depthDisabledForSession
+      || !frame.getDepthInformation
+      || time - this.lastDepthUpdate < settings.updateIntervalMilliseconds
+    ) return;
+
     const pose = frame.getViewerPose(referenceSpace);
     const view = pose?.views[0];
     if (!view) return;
-    let depth: XRCPUDepthInformation | null = null;
+
     try {
-      depth = frame.getDepthInformation(view);
-    } catch {
-      return;
-    }
-    if (!depth) return;
-    this.depthAvailable = true;
-    this.lastDepthUpdate = time;
+      const depth = frame.getDepthInformation(view);
+      if (!depth) return;
 
-    const columns = settings.sampleColumns;
-    const rows = settings.sampleRows;
-    const positions = new Float32Array(columns * rows * 3);
-    const valid = new Uint8Array(columns * rows);
-    const depths = new Float32Array(columns * rows);
-    const inverseProjection = new THREE.Matrix4().fromArray(view.projectionMatrix).invert();
-    const viewToWorld = new THREE.Matrix4().fromArray(view.transform.matrix);
-    const uvTransform = new THREE.Matrix4().fromArray(depth.normDepthBufferFromNormView.matrix);
+      // Rate-limit both successful and failed processing attempts once the
+      // runtime starts returning depth data. This avoids retrying a device-side
+      // depth failure on every XR frame.
+      this.lastDepthUpdate = time;
 
-    for (let row = 0; row < rows; row += 1) {
-      for (let column = 0; column < columns; column += 1) {
-        const index = row * columns + column;
-        const u = (column + 0.5) / columns;
-        const v = (row + 0.5) / rows;
-        const depthUv = new THREE.Vector4(u, v, 0, 1).applyMatrix4(uvTransform);
-        const depthX = Math.min(depth.width - 1, Math.max(0, (depthUv.x / depthUv.w) * depth.width));
-        const depthY = Math.min(depth.height - 1, Math.max(0, (depthUv.y / depthUv.w) * depth.height));
-        const meters = depth.getDepthInMeters(depthX, depthY);
-        if (!Number.isFinite(meters) || meters <= 0.08 || meters > settings.maximumDepthMeters) continue;
+      const columns = Math.max(2, Math.floor(settings.sampleColumns));
+      const rows = Math.max(2, Math.floor(settings.sampleRows));
+      const positions = new Float32Array(columns * rows * 3);
+      const valid = new Uint8Array(columns * rows);
+      const depths = new Float32Array(columns * rows);
+      const inverseProjection = new THREE.Matrix4().fromArray(view.projectionMatrix).invert();
+      const viewToWorld = new THREE.Matrix4().fromArray(view.transform.matrix);
 
-        const cameraPoint = new THREE.Vector3(u * 2 - 1, 1 - v * 2, 0.5).applyMatrix4(inverseProjection);
-        cameraPoint.normalize();
-        const forwardScale = meters / Math.max(0.001, Math.abs(cameraPoint.z));
-        cameraPoint.multiplyScalar(forwardScale).applyMatrix4(viewToWorld);
-        positions[index * 3] = cameraPoint.x;
-        positions[index * 3 + 1] = cameraPoint.y;
-        positions[index * 3 + 2] = cameraPoint.z;
-        valid[index] = 1;
-        depths[index] = meters;
+      for (let row = 0; row < rows; row += 1) {
+        for (let column = 0; column < columns; column += 1) {
+          const index = row * columns + column;
+          const u = (column + 0.5) / columns;
+          const v = (row + 0.5) / rows;
+
+          // getDepthInMeters() expects normalized VIEW coordinates in [0, 1].
+          // Passing depth-buffer pixel coordinates throws RangeError when the
+          // first depth frame arrives and can terminate Three.js' XR loop.
+          const meters = depth.getDepthInMeters(u, v);
+          if (!Number.isFinite(meters) || meters <= 0.08 || meters > settings.maximumDepthMeters) continue;
+
+          const cameraPoint = this.temporaryDepthPoint
+            .set(u * 2 - 1, 1 - v * 2, 0.5)
+            .applyMatrix4(inverseProjection)
+            .normalize();
+          const forwardScale = meters / Math.max(0.001, Math.abs(cameraPoint.z));
+          cameraPoint.multiplyScalar(forwardScale).applyMatrix4(viewToWorld);
+          positions[index * 3] = cameraPoint.x;
+          positions[index * 3 + 1] = cameraPoint.y;
+          positions[index * 3 + 2] = cameraPoint.z;
+          valid[index] = 1;
+          depths[index] = meters;
+        }
+      }
+
+      const indices: number[] = [];
+      const edgeOkay = (a: number, b: number) => Boolean(
+        valid[a]
+        && valid[b]
+        && Math.abs(depths[a] - depths[b]) <= settings.maximumEdgeDeltaMeters,
+      );
+      for (let row = 0; row < rows - 1; row += 1) {
+        for (let column = 0; column < columns - 1; column += 1) {
+          const a = row * columns + column;
+          const b = a + 1;
+          const c = a + columns;
+          const d = c + 1;
+          if (edgeOkay(a, b) && edgeOkay(a, c) && edgeOkay(b, c)) indices.push(a, c, b);
+          if (edgeOkay(b, c) && edgeOkay(b, d) && edgeOkay(c, d)) indices.push(b, c, d);
+        }
+      }
+
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geometry.setIndex(indices);
+      // MeshBasicMaterial and raycasting do not require a normal attribute.
+
+      if (!this.depthMesh) {
+        this.depthMesh = new THREE.Mesh(geometry, this.createEnvironmentMaterial(0x69a8ff));
+        this.depthMesh.name = 'WebXR depth collision and occlusion mesh';
+        this.depthMesh.userData.isEnvironmentCollider = true;
+        this.depthMesh.renderOrder = -20;
+        this.group.add(this.depthMesh);
+      } else {
+        this.depthMesh.geometry.dispose();
+        this.depthMesh.geometry = geometry;
+      }
+
+      this.depthTriangleCount = Math.floor(indices.length / 3);
+      this.depthMesh.updateMatrixWorld(true);
+      this.depthAvailable = true;
+      this.depthFailureCount = 0;
+    } catch (error) {
+      this.depthAvailable = false;
+      this.depthFailureCount += 1;
+      console.warn(`WebXR depth processing failed (${this.depthFailureCount}/3).`, error);
+
+      // Experimental depth implementations must never be allowed to terminate
+      // the XR render loop. Keep hit-test/plane AR alive after repeated errors.
+      if (this.depthFailureCount >= 3) {
+        this.depthDisabledForSession = true;
+        console.error('WebXR depth mesh disabled for this session after repeated failures.');
       }
     }
-
-    const indices: number[] = [];
-    const edgeOkay = (a: number, b: number) => valid[a] && valid[b] && Math.abs(depths[a] - depths[b]) <= settings.maximumEdgeDeltaMeters;
-    for (let row = 0; row < rows - 1; row += 1) {
-      for (let column = 0; column < columns - 1; column += 1) {
-        const a = row * columns + column;
-        const b = a + 1;
-        const c = a + columns;
-        const d = c + 1;
-        if (edgeOkay(a, b) && edgeOkay(a, c) && edgeOkay(b, c)) indices.push(a, c, b);
-        if (edgeOkay(b, c) && edgeOkay(b, d) && edgeOkay(c, d)) indices.push(b, c, d);
-      }
-    }
-
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geometry.setIndex(indices);
-    geometry.computeVertexNormals();
-    if (!this.depthMesh) {
-      this.depthMesh = new THREE.Mesh(geometry, this.createEnvironmentMaterial(0x69a8ff));
-      this.depthMesh.name = 'WebXR depth collision and occlusion mesh';
-      this.depthMesh.userData.isEnvironmentCollider = true;
-      this.depthMesh.renderOrder = -20;
-      this.group.add(this.depthMesh);
-    } else {
-      this.depthMesh.geometry.dispose();
-      this.depthMesh.geometry = geometry;
-    }
-    this.depthTriangleCount = Math.floor(indices.length / 3);
-    this.depthMesh.updateMatrixWorld(true);
   }
 
   private updateAnchor(frame: XRFrame, referenceSpace: XRReferenceSpace): void {

@@ -231,7 +231,7 @@ async function bootstrap(): Promise<void> {
         domOverlay: { root: overlay },
         depthSensing: {
           usagePreference: ['cpu-optimized'],
-          dataFormatPreference: ['float32', 'luminance-alpha'],
+          dataFormatPreference: ['luminance-alpha', 'float32'],
         },
       };
       xrSession = await navigator.xr.requestSession('immersive-ar', sessionInit);
