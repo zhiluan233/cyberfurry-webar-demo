@@ -1,0 +1,46 @@
+{
+  "character": {
+    "visualHeightMeters": 1.65,
+    "spawnLiftMeters": 0.28,
+    "moveSpeedMetersPerSecond": 1.1,
+    "turnSpeed": 9.0,
+    "gravityMetersPerSecondSquared": 9.81,
+    "jumpVelocityMetersPerSecond": 3.7,
+    "followDistanceMeters": 1.35,
+    "arrivalDistanceMeters": 0.18,
+    "maxStepHeightMeters": 0.3,
+    "capsule": {
+      "radiusMeters": 0.22,
+      "heightMeters": 1.55
+    }
+  },
+  "animations": {
+    "idle": {
+      "url": "/assets/animation/idle.vrma",
+      "loop": true,
+      "fadeSeconds": 0.25
+    },
+    "walk": {
+      "url": "/assets/animation/walk.vrma",
+      "loop": true,
+      "fadeSeconds": 0.18
+    },
+    "jump": {
+      "url": "/assets/animation/jump.vrma",
+      "loop": false,
+      "fadeSeconds": 0.1
+    }
+  },
+  "environment": {
+    "occlusion": true,
+    "planeDetection": true,
+    "depthMesh": {
+      "enabled": true,
+      "sampleColumns": 28,
+      "sampleRows": 20,
+      "updateIntervalMilliseconds": 300,
+      "maximumDepthMeters": 5.0,
+      "maximumEdgeDeltaMeters": 0.35
+    }
+  }
+}
