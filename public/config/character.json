@@ -36,11 +36,11 @@
     "planeDetection": true,
     "depthMesh": {
       "enabled": true,
-      "sampleColumns": 28,
-      "sampleRows": 20,
-      "updateIntervalMilliseconds": 300,
-      "maximumDepthMeters": 5.0,
-      "maximumEdgeDeltaMeters": 0.35
+      "sampleColumns": 16,
+      "sampleRows": 12,
+      "updateIntervalMilliseconds": 1000,
+      "maximumDepthMeters": 3.5,
+      "maximumEdgeDeltaMeters": 0.25
     }
   }
 }

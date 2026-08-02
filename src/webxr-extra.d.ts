@@ -14,6 +14,8 @@ interface XRFrame {
 interface XRCPUDepthInformation {
   readonly width: number;
   readonly height: number;
+  readonly data: ArrayBuffer;
+  readonly rawValueToMeters: number;
   readonly normDepthBufferFromNormView: XRRigidTransform;
   getDepthInMeters(x: number, y: number): number;
 }

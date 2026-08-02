@@ -28,6 +28,7 @@ export class XREnvironment {
   private readonly centerRaycaster = new THREE.Raycaster();
   private readonly temporaryMatrix = new THREE.Matrix4();
   private readonly temporaryDepthPoint = new THREE.Vector3();
+  private readonly temporaryDepthUv = new THREE.Vector4();
 
   constructor(private readonly scene: THREE.Scene, private readonly config: DemoConfig) {
     this.group.name = 'XR environment geometry';
@@ -122,7 +123,6 @@ export class XREnvironment {
     this.depthAvailable = false;
     this.depthFailureCount = 0;
     this.depthDisabledForSession = false;
-    this.lastDepthUpdate = -Infinity;
   }
 
   private updateCursor(
@@ -256,9 +256,7 @@ export class XREnvironment {
       const depth = frame.getDepthInformation(view);
       if (!depth) return;
 
-      // Rate-limit both successful and failed processing attempts once the
-      // runtime starts returning depth data. This avoids retrying a device-side
-      // depth failure on every XR frame.
+      // Limit retries once the runtime starts returning depth information.
       this.lastDepthUpdate = time;
 
       const columns = Math.max(2, Math.floor(settings.sampleColumns));
@@ -268,6 +266,26 @@ export class XREnvironment {
       const depths = new Float32Array(columns * rows);
       const inverseProjection = new THREE.Matrix4().fromArray(view.projectionMatrix).invert();
       const viewToWorld = new THREE.Matrix4().fromArray(view.transform.matrix);
+      const uvTransform = new THREE.Matrix4().fromArray(depth.normDepthBufferFromNormView.matrix);
+
+      // Avoid XRCPUDepthInformation.getDepthInMeters(). Some Android/Chrome
+      // implementations throw an internal out-of-bounds RangeError when the
+      // view-to-depth transform maps a valid view coordinate outside the
+      // cropped depth buffer. Reading the exposed CPU buffer directly lets us
+      // validate and clamp every index before accessing it.
+      const pixelCount = depth.width * depth.height;
+      const raw32 = depth.data.byteLength === pixelCount * Float32Array.BYTES_PER_ELEMENT
+        ? new Float32Array(depth.data)
+        : null;
+      const raw16 = depth.data.byteLength === pixelCount * Uint16Array.BYTES_PER_ELEMENT
+        ? new Uint16Array(depth.data)
+        : null;
+
+      if (!raw32 && !raw16) {
+        throw new Error(
+          `Unsupported WebXR depth buffer size: ${depth.data.byteLength} bytes for ${depth.width}x${depth.height}.`,
+        );
+      }
 
       for (let row = 0; row < rows; row += 1) {
         for (let column = 0; column < columns; column += 1) {
@@ -275,10 +293,27 @@ export class XREnvironment {
           const u = (column + 0.5) / columns;
           const v = (row + 0.5) / rows;
 
-          // getDepthInMeters() expects normalized VIEW coordinates in [0, 1].
-          // Passing depth-buffer pixel coordinates throws RangeError when the
-          // first depth frame arrives and can terminate Three.js' XR loop.
-          const meters = depth.getDepthInMeters(u, v);
+          const depthUv = this.temporaryDepthUv.set(u, v, 0, 1).applyMatrix4(uvTransform);
+          if (!Number.isFinite(depthUv.w) || Math.abs(depthUv.w) < 1e-7) continue;
+
+          const normalizedDepthX = depthUv.x / depthUv.w;
+          const normalizedDepthY = depthUv.y / depthUv.w;
+          if (
+            !Number.isFinite(normalizedDepthX)
+            || !Number.isFinite(normalizedDepthY)
+            || normalizedDepthX < 0
+            || normalizedDepthX >= 1
+            || normalizedDepthY < 0
+            || normalizedDepthY >= 1
+          ) continue;
+
+          const depthX = Math.min(depth.width - 1, Math.floor(normalizedDepthX * depth.width));
+          const depthY = Math.min(depth.height - 1, Math.floor(normalizedDepthY * depth.height));
+          const depthIndex = depthY * depth.width + depthX;
+          if (depthIndex < 0 || depthIndex >= pixelCount) continue;
+
+          const rawDepth = raw32 ? raw32[depthIndex] : raw16![depthIndex];
+          const meters = rawDepth * depth.rawValueToMeters;
           if (!Number.isFinite(meters) || meters <= 0.08 || meters > settings.maximumDepthMeters) continue;
 
           const cameraPoint = this.temporaryDepthPoint
@@ -337,8 +372,7 @@ export class XREnvironment {
       this.depthFailureCount += 1;
       console.warn(`WebXR depth processing failed (${this.depthFailureCount}/3).`, error);
 
-      // Experimental depth implementations must never be allowed to terminate
-      // the XR render loop. Keep hit-test/plane AR alive after repeated errors.
+      // Experimental depth implementations must never terminate the XR loop.
       if (this.depthFailureCount >= 3) {
         this.depthDisabledForSession = true;
         console.error('WebXR depth mesh disabled for this session after repeated failures.');
