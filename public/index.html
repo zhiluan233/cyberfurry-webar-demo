@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
+    <meta name="theme-color" content="#07130f" />
+    <title>FurryAR SE</title>
+    <script type="module" crossorigin src="/assets/app/index-CeUk1Hb6.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/app/index-CmNwkDj0.css">
+  </head>
+  <body>
+    <canvas id="stage" aria-label="WebXR Scene Session"></canvas>
+
+    <main id="overlay">
+      <header class="topbar glass">
+        <div class="brand">
+          <span class="brand-mark"></span>
+          <div>
+            <strong>CyberFurry WebAR Demo</strong>
+            <small id="runtime-label">Default Scene</small>
+          </div>
+        </div>
+        <div class="badges" aria-live="polite">
+          <span id="ar-badge" class="badge muted">AR 检测中</span>
+          <span id="depth-badge" class="badge muted">深度未知</span>
+        </div>
+        <div class="top-actions">
+          <button id="debug-toggle" class="icon-button" type="button" aria-expanded="false" aria-controls="debug-panel">调试</button>
+          <button id="start-ar" class="primary" type="button">启动 AR</button>
+        </div>
+      </header>
+
+      <section class="left-panel glass" aria-label="角色与行为">
+        <input id="vrm-input" type="file" accept=".vrm,.glb,model/gltf-binary" hidden />
+        <button id="load-vrm" class="wide" type="button">选择本地 VRM</button>
+        <button id="place-character" class="wide accent" type="button" disabled>放置角色 / 锁定锚点</button>
+
+        <div class="section-label">本地动画预览</div>
+        <input id="vrma-input" type="file" accept=".vrma" hidden />
+        <button id="load-vrma" class="wide" type="button" disabled>打开 VRMA 动画</button>
+        <div class="preview-controls" role="group" aria-label="动画预览控制">
+          <button id="pause-vrma" type="button" disabled>暂停</button>
+          <button id="stop-vrma" type="button" disabled>停止预览</button>
+        </div>
+        <div id="vrma-status" class="preview-status" role="status" aria-live="polite">请先载入 VRM 角色</div>
+
+        <div class="section-label">角色行为</div>
+        <div class="mode-grid" role="group" aria-label="移动模式">
+          <button class="mode active" data-mode="manual" type="button">手动</button>
+          <button class="mode" data-mode="follow-player" type="button">跟随玩家</button>
+          <button class="mode" data-mode="follow-cursor" type="button">跟随光标</button>
+          <button class="mode" data-mode="go-to" type="button">走到光标点</button>
+        </div>
+        <p id="status-copy">选择 VRM 后，创建出生点。</p>
+      </section>
+
+      <section id="debug-panel" class="debug-panel glass" hidden>
+        <div class="debug-heading">
+          <strong>碰撞胶囊</strong>
+          <span id="fps">-- FPS</span>
+        </div>
+        <label>
+          <span>半径 <output id="radius-value">0.22 m</output></span>
+          <input id="capsule-radius" type="range" min="0.10" max="0.60" step="0.01" value="0.22" />
+        </label>
+        <label>
+          <span>高度 <output id="height-value">1.55 m</output></span>
+          <input id="capsule-height" type="range" min="0.50" max="2.50" step="0.05" value="1.55" />
+        </label>
+        <label>
+          <span>移动速度 <output id="speed-value">1.10 m/s</output></span>
+          <input id="move-speed" type="range" min="0.25" max="3.00" step="0.05" value="1.10" />
+        </label>
+        <label class="check-row">
+          <input id="show-geometry" type="checkbox" />
+          <span>显示环境碰撞网格</span>
+        </label>
+        <div class="debug-stats">
+          <span>平面 <b id="plane-count">0</b></span>
+          <span>深度三角形 <b id="depth-count">0</b></span>
+          <span>状态 <b id="motion-state">idle</b></span>
+        </div>
+      </section>
+
+      <div id="reticle" aria-hidden="true"><i></i></div>
+
+      <div id="joystick" class="joystick" aria-label="角色移动摇杆">
+        <div class="joystick-ring"></div>
+        <div id="joystick-knob" class="joystick-knob"></div>
+      </div>
+
+      <button id="jump" class="jump-button" type="button" disabled>跳跃</button>
+
+      <div class="desktop-help glass">
+        <b>调试操作</b>
+        <span>WASD 移动相机 · 拖动画面转向 · 摇杆控制角色</span>
+      </div>
+
+      <div id="toast" class="toast" role="status" aria-live="polite"></div>
+      <div id="loading" class="loading" hidden><span></span><b>正在载入模型…</b></div>
+    </main>
+
+  </body>
+</html>

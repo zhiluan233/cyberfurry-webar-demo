@@ -4,6 +4,7 @@ import { VRMLoaderPlugin, VRMUtils, type VRM, type VRMHumanBoneName } from '@pix
 import {
   VRMAnimationLoaderPlugin,
   createVRMAnimationClip,
+  VRMLookAtQuaternionProxy,
   type VRMAnimation,
 } from '@pixiv/three-vrm-animation';
 import type { CollisionWorld, DemoConfig, MotionState, MovementMode } from './app-types';
@@ -24,6 +25,8 @@ export class CharacterController {
   private mixer: THREE.AnimationMixer | null = null;
   private actions: Partial<Record<MotionState, THREE.AnimationAction>> = {};
   private currentAction: THREE.AnimationAction | null = null;
+  private previewAction: THREE.AnimationAction | null = null;
+  previewFileName: string | null = null;
   private velocityY = 0;
   private capsuleDebug: THREE.LineSegments | null = null;
   private fallbackBones = new Map<VRMHumanBoneName, { node: THREE.Object3D; rest: THREE.Quaternion }>();
@@ -42,6 +45,8 @@ export class CharacterController {
 
   get capsuleRadius(): number { return this.config.character.capsule.radiusMeters; }
   get capsuleHeight(): number { return this.config.character.capsule.heightMeters; }
+  get previewing(): boolean { return this.previewAction !== null; }
+  get previewPaused(): boolean { return this.previewAction?.paused ?? false; }
 
   async loadFile(file: File): Promise<void> {
     const objectUrl = URL.createObjectURL(file);
@@ -52,7 +57,11 @@ export class CharacterController {
       const nextVrm = gltf.userData.vrm as VRM | undefined;
       if (!nextVrm) throw new Error('无效 VRM');
 
+      this.stopAnimationPreview();
+      this.loaded = false;
+      this.mixer?.stopAllAction();
       if (this.vrm) {
+        this.mixer?.uncacheRoot(this.vrm.scene);
         this.root.remove(this.vrm.scene);
         VRMUtils.deepDispose(this.vrm.scene);
       }
@@ -70,6 +79,11 @@ export class CharacterController {
       });
 
       this.normalizeVisualSize(nextVrm.scene);
+      if (nextVrm.lookAt) {
+        const lookAtProxy = new VRMLookAtQuaternionProxy(nextVrm.lookAt);
+        lookAtProxy.name = 'lookAtQuaternionProxy';
+        nextVrm.scene.add(lookAtProxy);
+      }
       this.root.add(nextVrm.scene);
       this.mixer = new THREE.AnimationMixer(nextVrm.scene);
       this.actions = {};
@@ -81,6 +95,54 @@ export class CharacterController {
     } finally {
       URL.revokeObjectURL(objectUrl);
     }
+  }
+
+  async previewAnimationFile(file: File): Promise<void> {
+    const vrm = this.vrm;
+    const mixer = this.mixer;
+    if (!this.loaded || !vrm || !mixer) throw new Error('请先载入 VRM 角色');
+    if (!file.name.toLowerCase().endsWith('.vrma')) throw new Error('请选择 .vrma 动画文件');
+
+    const objectUrl = URL.createObjectURL(file);
+    try {
+      const loader = new GLTFLoader();
+      loader.register(parser => new VRMAnimationLoaderPlugin(parser));
+      const gltf = await loader.loadAsync(objectUrl);
+      const animation = (gltf.userData.vrmAnimations as VRMAnimation[] | undefined)?.[0];
+      if (!animation) throw new Error('文件中没有有效的 VRMA 动画');
+      if (this.vrm !== vrm || this.mixer !== mixer || !this.loaded) {
+        throw new Error('角色已更换，请重新选择动画');
+      }
+      const clip = createVRMAnimationClip(animation, vrm);
+      if (!clip.tracks.length || !Number.isFinite(clip.duration) || clip.duration <= 0) {
+        throw new Error('动画没有可用于当前角色的有效轨道');
+      }
+
+      // Replace only after validation so a bad file leaves the current preview playing.
+      this.stopAnimationPreview();
+      mixer.stopAllAction();
+      this.currentAction = null;
+      vrm.humanoid.resetNormalizedPose();
+      this.previewAction = mixer.clipAction(clip);
+      this.previewAction.setLoop(THREE.LoopRepeat, Infinity).reset().play();
+      this.previewFileName = file.name;
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
+  }
+
+  toggleAnimationPreview(): void {
+    if (this.previewAction) this.previewAction.paused = !this.previewAction.paused;
+  }
+
+  stopAnimationPreview(): void {
+    if (!this.previewAction) return;
+    const clip = this.previewAction.getClip();
+    this.previewAction.stop();
+    this.mixer?.uncacheClip(clip);
+    this.previewAction = null;
+    this.previewFileName = null;
+    this.setMotionState(this.motionState, true);
   }
 
   place(point: THREE.Vector3): void {
@@ -130,9 +192,9 @@ export class CharacterController {
     else this.setMotionState(moving ? 'walk' : 'idle');
 
     this.mixer?.update(delta);
-    this.vrm.update(delta);
     this.animationTime += delta;
-    if (!this.actions[this.motionState]) this.updateProceduralAnimation(delta);
+    if (!this.previewAction && !this.actions[this.motionState]) this.updateProceduralAnimation(delta);
+    this.vrm.update(delta);
     if (this.capsuleDebug) {
       this.capsuleDebug.position.set(this.position.x, this.position.y + this.capsuleHeight / 2, this.position.z);
       this.capsuleDebug.rotation.y = this.root.rotation.y;
@@ -275,6 +337,7 @@ export class CharacterController {
     if (!force && this.motionState === next) return;
     const previous = this.currentAction;
     this.motionState = next;
+    if (this.previewAction) return;
     const nextAction = this.actions[next] ?? null;
     if (nextAction && nextAction !== previous) {
       nextAction.reset().fadeIn(this.config.animations[next].fadeSeconds).play();

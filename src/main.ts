@@ -17,6 +17,11 @@ const overlay = element<HTMLElement>('overlay');
 const startARButton = element<HTMLButtonElement>('start-ar');
 const loadVRMButton = element<HTMLButtonElement>('load-vrm');
 const vrmInput = element<HTMLInputElement>('vrm-input');
+const vrmaInput = element<HTMLInputElement>('vrma-input');
+const loadVRMAButton = element<HTMLButtonElement>('load-vrma');
+const pauseVRMAButton = element<HTMLButtonElement>('pause-vrma');
+const stopVRMAButton = element<HTMLButtonElement>('stop-vrma');
+const vrmaStatus = element<HTMLElement>('vrma-status');
 const placeButton = element<HTMLButtonElement>('place-character');
 const jumpButton = element<HTMLButtonElement>('jump');
 const debugToggle = element<HTMLButtonElement>('debug-toggle');
@@ -156,6 +161,7 @@ async function bootstrap(): Promise<void> {
       const file = vrmInput.files?.[0];
       if (!file) return;
       loadingElement.hidden = false;
+      loadingElement.querySelector('b')!.textContent = '正在载入模型…';
       try {
         await character.loadFile(file);
         placeButton.disabled = false;
@@ -169,7 +175,35 @@ async function bootstrap(): Promise<void> {
       } finally {
         loadingElement.hidden = true;
         vrmInput.value = '';
+        updatePreviewControls();
       }
+    });
+
+    loadVRMAButton.addEventListener('click', () => vrmaInput.click());
+    vrmaInput.addEventListener('change', async () => {
+      const file = vrmaInput.files?.[0];
+      if (!file) return;
+      loadingElement.querySelector('b')!.textContent = '正在载入动画…';
+      loadingElement.hidden = false;
+      try {
+        await character.previewAnimationFile(file);
+        toast(`正在循环预览 ${file.name}`);
+      } catch (error) {
+        toast(error instanceof Error ? error.message : 'VRMA 载入失败', true);
+      } finally {
+        loadingElement.hidden = true;
+        vrmaInput.value = '';
+        updatePreviewControls();
+      }
+    });
+    pauseVRMAButton.addEventListener('click', () => {
+      character.toggleAnimationPreview();
+      updatePreviewControls();
+    });
+    stopVRMAButton.addEventListener('click', () => {
+      character.stopAnimationPreview();
+      updatePreviewControls();
+      toast('已停止预览，恢复角色默认动作');
     });
 
     placeButton.addEventListener('click', async () => {
@@ -219,6 +253,16 @@ async function bootstrap(): Promise<void> {
       renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
       renderer.setSize(innerWidth, innerHeight);
     });
+  }
+
+  function updatePreviewControls(): void {
+    loadVRMAButton.disabled = !character.loaded;
+    pauseVRMAButton.disabled = !character.previewing;
+    stopVRMAButton.disabled = !character.previewing;
+    pauseVRMAButton.textContent = character.previewPaused ? '继续' : '暂停';
+    vrmaStatus.textContent = character.previewing
+      ? `${character.previewPaused ? '已暂停' : '循环播放'}：${character.previewFileName}`
+      : character.loaded ? '选择 .vrma 应用于当前角色' : '请先载入 VRM 角色';
   }
 
   async function startAR(): Promise<void> {

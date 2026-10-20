@@ -7,6 +7,7 @@
 ## 已实现
 
 - 从本地选择 `.vrm` / `.glb` 文件。`@pixiv/three-vrm`
+- 打开本地 `.vrma`，在当前 VRM 角色上循环预览，支持暂停、继续和停止后恢复默认动作。
 - 从 `public/assets/animation` 加载 `idle.vrma`、`walk.vrma`、`jump.vrma`。
 - 触摸摇杆控制角色，以当前相机朝向作为移动坐标系。
 - PC 调试场景中使用 WASD 移动自由相机，拖动画面转向，Q/E 升降。
@@ -33,6 +34,8 @@ npm run build
 npm run preview
 ```
 
+构建结果直接输出到 `public/`，可将该目录作为静态站点部署。生成的 JS/CSS 位于 `public/assets/app/`，已有的 `public/config/` 和 `public/assets/animation/` 会保留。
+
 ## Android 真机测试
 
 要求：
@@ -50,6 +53,8 @@ adb reverse tcp:5173 tcp:5173
 然后在手机 Chrome 打开 `http://localhost:5173`。
 
 ## 自定义 VRMA 动画
+
+临时预览：先选择本地 VRM 角色，再点击“打开 VRMA 动画”选择 `.vrma` 文件，动画会立即应用到场上的角色并循环播放。“暂停 / 继续”控制播放，“停止预览”恢复 idle / walk / jump 默认动作。预览期间仍可移动、放置角色，默认动作不会覆盖预览；更换角色会清除预览。文件仅在当前浏览器中读取，不会上传。
 
 动画文件路径：
 

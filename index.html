@@ -33,6 +33,15 @@
         <button id="load-vrm" class="wide" type="button">选择本地 VRM</button>
         <button id="place-character" class="wide accent" type="button" disabled>放置角色 / 锁定锚点</button>
 
+        <div class="section-label">本地动画预览</div>
+        <input id="vrma-input" type="file" accept=".vrma" hidden />
+        <button id="load-vrma" class="wide" type="button" disabled>打开 VRMA 动画</button>
+        <div class="preview-controls" role="group" aria-label="动画预览控制">
+          <button id="pause-vrma" type="button" disabled>暂停</button>
+          <button id="stop-vrma" type="button" disabled>停止预览</button>
+        </div>
+        <div id="vrma-status" class="preview-status" role="status" aria-live="polite">请先载入 VRM 角色</div>
+
         <div class="section-label">角色行为</div>
         <div class="mode-grid" role="group" aria-label="移动模式">
           <button class="mode active" data-mode="manual" type="button">手动</button>

@@ -126,6 +126,10 @@ button:disabled { opacity: 0.42; cursor: not-allowed; }
   border-radius: 19px;
 }
 .left-panel .wide { width: 100%; margin-bottom: 8px; }
+.left-panel { max-height: calc(100dvh - 260px); overflow-y: auto; touch-action: pan-y; }
+.preview-controls { display: flex; gap: 7px; }
+.preview-controls button { flex: 1; min-width: 0; padding: 0 7px; }
+.preview-status { color: #9ab6aa; font-size: 11px; line-height: 1.5; margin: 7px 2px 10px; overflow-wrap: anywhere; }
 .section-label {
   margin: 10px 2px 8px;
   color: #8aaf9e;
