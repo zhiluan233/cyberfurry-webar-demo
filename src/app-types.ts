@@ -1,7 +1,7 @@
 import type * as THREE from 'three';
 
 export type MotionState = 'idle' | 'walk' | 'jump';
-export type MovementMode = 'manual' | 'follow-player' | 'follow-cursor' | 'go-to';
+export type MovementMode = import('./behaviors').BehaviorMode;
 
 export interface DemoConfig {
   character: {

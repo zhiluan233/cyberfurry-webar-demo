@@ -31,6 +31,7 @@
       <section class="left-panel glass" aria-label="角色与行为">
         <input id="vrm-input" type="file" accept=".vrm,.glb,model/gltf-binary" hidden />
         <button id="load-vrm" class="wide" type="button">选择本地 VRM</button>
+        <button id="demo-character" class="wide" type="button">内置关节测试角色</button>
         <button id="place-character" class="wide accent" type="button" disabled>放置角色 / 锁定锚点</button>
 
         <div class="section-label">本地动画预览</div>
@@ -42,14 +43,24 @@
         </div>
         <div id="vrma-status" class="preview-status" role="status" aria-live="polite">请先载入 VRM 角色</div>
 
+        <div class="section-label">运动控制</div>
+        <label class="control-label" for="navigation-mode">抵达目标的方法</label>
+        <select id="navigation-mode"><option value="pathfinding">寻路模式 · 自动绕障</option><option value="direct">移动模式 · 沿直线</option></select>
+        <label class="control-label" for="locomotion-style">Locomotion 动作</label>
+        <select id="locomotion-style"></select>
+        <div id="locomotion-description" class="preview-status"></div>
         <div class="section-label">角色行为</div>
-        <div class="mode-grid" role="group" aria-label="移动模式">
-          <button class="mode active" data-mode="manual" type="button">手动</button>
-          <button class="mode" data-mode="follow-player" type="button">跟随玩家</button>
-          <button class="mode" data-mode="follow-cursor" type="button">跟随光标</button>
-          <button class="mode" data-mode="go-to" type="button">走到光标点</button>
-        </div>
-        <p id="status-copy">选择 VRM 后，创建出生点。</p>
+        <select id="behavior-mode" aria-label="角色行为"></select>
+        <div id="behavior-description" class="preview-status"></div>
+        <div class="preview-controls"><button id="target-cursor" type="button">走到光标点</button><button id="stop-behavior" type="button">停止任务</button></div>
+        <div class="section-label">同地图特色场景</div>
+        <select id="demo-station" aria-label="演示场景"></select>
+        <div id="station-description" class="preview-status"></div>
+        <div class="preview-controls"><button id="start-station" type="button">演示此场景</button><button id="tour-stations" type="button">全部巡展</button></div>
+        <label class="check-row"><input id="gizmo-enabled" type="checkbox" /> Gizmo 移动角色</label>
+        <label class="check-row"><input id="gizmo-snap" type="checkbox" /> 吸附到 0.25 m 网格</label>
+        <div id="task-status" class="preview-status" role="status"></div>
+        <p id="status-copy">已启用内置测试角色。双击地面设置目标；拖动三轴 Gizmo 移动角色。</p>
       </section>
 
       <section id="debug-panel" class="debug-panel glass" hidden>
@@ -67,8 +78,11 @@
         </label>
         <label>
           <span>移动速度 <output id="speed-value">1.10 m/s</output></span>
-          <input id="move-speed" type="range" min="0.25" max="3.00" step="0.05" value="1.10" />
+          <input id="move-speed" type="range" min="0" max="3.00" step="0.05" value="1.10" />
         </label>
+        <label class="check-row"><input id="shade-compatibility" type="checkbox" checked /> 修复旧版 VRM 缺失阴影贴图</label>
+        <div id="material-status" class="preview-status">内置角色材质</div>
+        <label><span>曝光 <output id="exposure-value">1.00</output></span><input id="exposure" type="range" min="0.5" max="1.5" step="0.05" value="1" /></label>
         <label class="check-row">
           <input id="show-geometry" type="checkbox" />
           <span>显示环境碰撞网格</span>
@@ -91,7 +105,7 @@
 
       <div class="desktop-help glass">
         <b>调试操作</b>
-        <span>WASD 移动相机 · 拖动画面转向 · 摇杆控制角色</span>
+        <span>WASD / QE 相机 · 拖动转向 · 双击地面设目标 · Gizmo 三轴拖动</span>
       </div>
 
       <div id="toast" class="toast" role="status" aria-live="polite"></div>

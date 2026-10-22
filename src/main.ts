@@ -2,6 +2,10 @@ import './style.css';
 import * as THREE from 'three';
 import { CharacterController } from './character-controller';
 import { loadConfig } from './config';
+import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
+import { BEHAVIORS } from './behaviors';
+import { LOCOMOTION_STYLES, type LocomotionStyle } from './locomotion';
+import type { NavigationMode } from './navigation';
 import { createNatureScene } from './nature-scene';
 import type { MovementMode } from './app-types';
 import { XREnvironment } from './xr-environment';
@@ -69,15 +73,15 @@ async function bootstrap(): Promise<void> {
   renderer.setSize(innerWidth, innerHeight);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.05;
+  renderer.toneMappingExposure = 1.0;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.xr.enabled = true;
   renderer.xr.setReferenceSpaceType('local-floor');
 
-  const hemisphere = new THREE.HemisphereLight(0xdffff5, 0x35523d, 2.3);
+  const hemisphere = new THREE.HemisphereLight(0xe9f4ff, 0x626b59, 1.15);
   scene.add(hemisphere);
-  const sunlight = new THREE.DirectionalLight(0xfff3cf, 3.1);
+  const sunlight = new THREE.DirectionalLight(0xfff6e9, 2.0);
   sunlight.position.set(5, 9, 4);
   sunlight.castShadow = true;
   sunlight.shadow.mapSize.set(1024, 1024);
@@ -92,7 +96,27 @@ async function bootstrap(): Promise<void> {
   nature.group.updateMatrixWorld(true);
   const xrEnvironment = new XREnvironment(scene, config);
   const character = new CharacterController(scene, config, toast);
-  character.root.visible = false;
+  character.place(new THREE.Vector3(0, 0, 0));
+  placeButton.disabled = false;
+  jumpButton.disabled = false;
+  const gizmo = new TransformControls(camera, canvas);
+  gizmo.setMode('translate');
+  gizmo.setSpace('world');
+  gizmo.setSize(0.85);
+  scene.add(gizmo.getHelper());
+  const gizmoEnabled = element<HTMLInputElement>('gizmo-enabled');
+  const behaviorSelect = element<HTMLSelectElement>('behavior-mode');
+  const styleSelect = element<HTMLSelectElement>('locomotion-style');
+  const stationSelect = element<HTMLSelectElement>('demo-station');
+  const navSelect = element<HTMLSelectElement>('navigation-mode');
+  let tour = false;
+  let stationElapsed = 0;
+  let stationRunning = false;
+  const pathLine = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffd27d, depthTest: false, transparent: true, opacity: 0.85 }));
+  pathLine.frustumCulled = false;
+  pathLine.renderOrder = 5;
+  scene.add(pathLine);
+  let pathRefresh = 0;
 
   radiusInput.value = String(config.character.capsule.radiusMeters);
   heightInput.value = String(config.character.capsule.heightMeters);
@@ -115,6 +139,7 @@ async function bootstrap(): Promise<void> {
   setupInterface();
   setupJoystick();
   setupCameraControls();
+  setupMovementInterface();
 
   renderer.setAnimationLoop((time, frame) => {
     const delta = clock.getDelta();
@@ -123,9 +148,121 @@ async function bootstrap(): Promise<void> {
     xrEnvironment.update(time, frame, xrReferenceSpace, activeCamera, hitTestSource, nature.colliders);
     const worldMeshes = renderer.xr.isPresenting ? xrEnvironment.colliders : nature.colliders;
     character.update(delta, activeCamera, xrEnvironment.cursor.valid ? xrEnvironment.cursor.position : null, { meshes: worldMeshes });
+    updateTour(delta);
+    pathRefresh += delta;
+    if (pathRefresh > 0.15) {
+      pathRefresh = 0;
+      pathLine.geometry.dispose();
+      pathLine.geometry = new THREE.BufferGeometry().setFromPoints(character.navigator.path.map(p => p.clone().add(new THREE.Vector3(0, 0.045, 0))));
+      pathLine.visible = !renderer.xr.isPresenting && character.navigator.path.length > 1 && character.navigationMode === 'pathfinding';
+    }
     renderer.render(scene, camera);
     updateRuntimeStats(delta);
   });
+
+  function setupMovementInterface(): void {
+    for (const item of BEHAVIORS) behaviorSelect.add(new Option(item.label, item.id));
+    for (const item of LOCOMOTION_STYLES) styleSelect.add(new Option(item.label, item.id));
+    for (const item of nature.stations) stationSelect.add(new Option(item.label, item.id));
+    updateBehaviorDescription(); updateStyleDescription(); updateStationDescription(); updatePreviewControls();
+    element('demo-character').addEventListener('click', () => {
+      character.useDemoCharacter(); character.place(new THREE.Vector3(0, 0, 0));
+      tour = false; stationRunning = false; updatePreviewControls(); updateMaterialStatus(); updateGizmo();
+      statusCopy.textContent = '内置关节测试角色';
+    });
+    navSelect.addEventListener('change', () => character.setNavigationMode(navSelect.value as NavigationMode));
+    styleSelect.addEventListener('change', () => {
+      setActiveMode('manual'); character.setLocomotion(styleSelect.value as LocomotionStyle); styleSelect.value = character.locomotionStyle; updateStyleDescription();
+    });
+    behaviorSelect.addEventListener('change', () => {
+      if (behaviorSelect.value === 'go-to' && !xrEnvironment.cursor.valid) { behaviorSelect.value = character.mode; toast('请对准地面，或双击地面设置目标', true); return; }
+      setActiveMode(behaviorSelect.value as MovementMode);
+    });
+    element('target-cursor').addEventListener('click', () => {
+      if (!xrEnvironment.cursor.valid) { toast('请先对准可站立区域', true); return; }
+      setActiveMode('go-to');
+    });
+    element('stop-behavior').addEventListener('click', () => setActiveMode('manual'));
+    stationSelect.addEventListener('change', updateStationDescription);
+    element('start-station').addEventListener('click', () => { tour = false; startStation(); });
+    element('tour-stations').addEventListener('click', () => {
+      tour = !tour;
+      if (tour) startStation(); else { stationRunning = false; character.setMode('manual', null); }
+    });
+    gizmoEnabled.addEventListener('change', updateGizmo);
+    element<HTMLInputElement>('gizmo-snap').addEventListener('change', event => gizmo.setTranslationSnap((event.target as HTMLInputElement).checked ? 0.25 : null));
+    gizmo.addEventListener('dragging-changed', event => {
+      if (event.value) { tour = false; stationRunning = false; character.beginManipulation(); pressedKeys.clear(); }
+      else character.endManipulation();
+    });
+    element<HTMLInputElement>('shade-compatibility').addEventListener('change', event => {
+      character.setShadeCompatibility((event.target as HTMLInputElement).checked); updateMaterialStatus();
+    });
+    element<HTMLInputElement>('exposure').addEventListener('input', event => {
+      renderer.toneMappingExposure = Number((event.target as HTMLInputElement).value);
+      element<HTMLOutputElement>('exposure-value').value = renderer.toneMappingExposure.toFixed(2);
+    });
+    canvas.addEventListener('dblclick', event => {
+      if (renderer.xr.isPresenting || gizmo.dragging || (gizmo.enabled && gizmo.axis)) return;
+      const rect = canvas.getBoundingClientRect();
+      const ray = new THREE.Raycaster();
+      ray.setFromCamera(new THREE.Vector2((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1), camera);
+      const hit = ray.intersectObjects(nature.colliders, false)[0];
+      if (!hit?.face || hit.face.normal.clone().transformDirection(hit.object.matrixWorld).y < 0.5) return;
+      setActiveMode('manual'); character.setMode('go-to', hit.point); behaviorSelect.value = 'go-to'; updateBehaviorDescription();
+    });
+  }
+
+  function updateGizmo(): void {
+    gizmo.enabled = gizmoEnabled.checked && !renderer.xr.isPresenting && character.loaded;
+    if (gizmo.enabled) gizmo.attach(character.root); else gizmo.detach();
+  }
+
+  function updateMaterialStatus(): void {
+    element('material-status').textContent = character.hasVRM
+      ? (character.shadeCompatibility ? '兼容修复已开启' : '使用原始材质') + ' · ' + character.repairedMaterialCount + ' 个缺失阴影贴图材质'
+      : '内置角色材质';
+  }
+
+  function updateStyleDescription(): void {
+    element('locomotion-description').textContent = LOCOMOTION_STYLES.find(item => item.id === styleSelect.value)?.description ?? '';
+  }
+  function updateBehaviorDescription(): void {
+    element('behavior-description').textContent = BEHAVIORS.find(item => item.id === behaviorSelect.value)?.description ?? '';
+  }
+  function updateStationDescription(): void {
+    element('station-description').textContent = nature.stations.find(item => item.id === stationSelect.value)?.description ?? '';
+  }
+
+  function startStation(): void {
+    if (renderer.xr.isPresenting) return;
+    const station = nature.stations.find(item => item.id === stationSelect.value);
+    if (!station) return;
+    gizmoEnabled.checked = false; updateGizmo();
+    character.stopAnimationPreview(); updatePreviewControls();
+    character.place(station.waypoints[0]);
+    character.setLocomotion(station.style as LocomotionStyle);
+    styleSelect.value = station.style; updateStyleDescription();
+    if (station.behavior) {
+      character.place(station.waypoints[0]);
+      character.setMode(station.behavior as MovementMode, station.waypoints[1] ?? null);
+    } else character.startRoute(station.waypoints, station.traversal);
+    camera.position.copy(station.cameraPosition);
+    camera.lookAt(station.waypoints[0].clone().add(new THREE.Vector3(0, 0.8, 0)));
+    camera.rotation.order = 'YXZ'; yaw = camera.rotation.y; pitch = camera.rotation.x;
+    stationElapsed = 0; stationRunning = true;
+    statusCopy.textContent = station.label + ' · ' + station.description;
+  }
+
+  function updateTour(delta: number): void {
+    if (!stationRunning || !tour || config.character.moveSpeedMetersPerSecond === 0) return;
+    stationElapsed += Math.min(delta, 0.05);
+    const station = nature.stations.find(item => item.id === stationSelect.value);
+    if ((station?.behavior ? stationElapsed > 16 : !character.routeActive && stationElapsed > 2) || stationElapsed > 65) {
+      stationSelect.selectedIndex = (stationSelect.selectedIndex + 1) % nature.stations.length;
+      updateStationDescription(); startStation();
+    }
+  }
 
   async function detectARSupport(): Promise<void> {
     if (!navigator.xr || !window.isSecureContext) {
@@ -164,11 +301,14 @@ async function bootstrap(): Promise<void> {
       loadingElement.querySelector('b')!.textContent = '正在载入模型…';
       try {
         await character.loadFile(file);
+        tour = false; stationRunning = false;
         placeButton.disabled = false;
         jumpButton.disabled = false;
         const spawn = xrEnvironment.cursor.valid ? await xrEnvironment.lockAnchorAtCursor() : new THREE.Vector3(0, 0, 0);
         character.place(spawn ?? new THREE.Vector3(0, 0, 0));
         statusCopy.textContent = `已载入角色 ${file.name}`;
+        updateMaterialStatus();
+        updateGizmo();
         toast(`已载入 ${file.name}`);
       } catch (error) {
         toast(error instanceof Error ? error.message : 'VRM 载入失败', true);
@@ -216,22 +356,12 @@ async function bootstrap(): Promise<void> {
         toast('请把中央光标移动到地面或桌面。', true);
         return;
       }
+      tour = false; stationRunning = false;
       character.place(point);
       toast('角色已放置。');
     });
 
     jumpButton.addEventListener('click', () => character.jump());
-
-    document.querySelectorAll<HTMLButtonElement>('.mode').forEach(button => {
-      button.addEventListener('click', () => {
-        const mode = button.dataset.mode as MovementMode;
-        if (mode === 'go-to' && !xrEnvironment.cursor.valid) {
-          toast('当前没有有效光标点。', true);
-          return;
-        }
-        setActiveMode(mode);
-      });
-    });
 
     debugToggle.addEventListener('click', () => {
       debugPanel.hidden = !debugPanel.hidden;
@@ -256,13 +386,13 @@ async function bootstrap(): Promise<void> {
   }
 
   function updatePreviewControls(): void {
-    loadVRMAButton.disabled = !character.loaded;
+    loadVRMAButton.disabled = !character.hasVRM;
     pauseVRMAButton.disabled = !character.previewing;
     stopVRMAButton.disabled = !character.previewing;
     pauseVRMAButton.textContent = character.previewPaused ? '继续' : '暂停';
     vrmaStatus.textContent = character.previewing
       ? `${character.previewPaused ? '已暂停' : '循环播放'}：${character.previewFileName}`
-      : character.loaded ? '选择 .vrma 应用于当前角色' : '请先载入 VRM 角色';
+      : character.hasVRM ? '选择 .vrma 应用于当前角色' : '请先载入 VRM 角色';
   }
 
   async function startAR(): Promise<void> {
@@ -285,6 +415,10 @@ async function bootstrap(): Promise<void> {
       const viewerSpace = await xrSession.requestReferenceSpace('viewer');
       if (!xrSession.requestHitTestSource) throw new Error('浏览器未开放 WebXR Hit Test');
       hitTestSource = (await xrSession.requestHitTestSource({ space: viewerSpace })) ?? null;
+      tour = false; stationRunning = false;
+      character.setMode('manual', null);
+      gizmo.detach(); gizmo.enabled = false;
+      document.body.classList.add('in-ar');
       nature.group.visible = false;
       scene.background = null;
       scene.fog = null;
@@ -296,6 +430,7 @@ async function bootstrap(): Promise<void> {
       depthBadge.className = 'badge muted';
       toast('移动设备扫描环境，把中央光标对准地面后放置角色。');
     } catch (error) {
+      if (xrSession) { await xrSession.end().catch(() => {}); onXREnded(); }
       xrSession = null;
       toast(error instanceof Error ? `AR 启动失败：${error.message}` : 'AR 启动失败', true);
     } finally {
@@ -309,7 +444,10 @@ async function bootstrap(): Promise<void> {
     xrReferenceSpace = null;
     xrSession = null;
     xrEnvironment.clearXRGeometry();
+    document.body.classList.remove('in-ar');
     nature.group.visible = true;
+    character.place(new THREE.Vector3(0, 0, 0));
+    queueMicrotask(updateGizmo);
     scene.background = new THREE.Color(0x87c9c4);
     scene.fog = new THREE.FogExp2(0x87c9c4, 0.035);
     runtimeLabel.textContent = '桌面调试场景';
@@ -333,7 +471,7 @@ async function bootstrap(): Promise<void> {
       }
       character.joystick.set(dx / maxDistance, dy / maxDistance);
       joystickKnob.style.transform = `translate(${dx}px, ${dy}px)`;
-      if (character.mode !== 'manual') setActiveMode('manual');
+      if (character.mode !== 'manual' || character.routeActive) setActiveMode('manual');
     };
     joystickElement.addEventListener('pointerdown', event => {
       pointerId = event.pointerId;
@@ -354,20 +492,32 @@ async function bootstrap(): Promise<void> {
   }
 
   function setupCameraControls(): void {
-    addEventListener('keydown', event => pressedKeys.add(event.code));
-    addEventListener('keyup', event => pressedKeys.delete(event.code));
+    addEventListener('keydown', event => {
+      if ((event.target as HTMLElement)?.matches('input, select, button, textarea')) return;
+      pressedKeys.add(event.code);
+      if (event.code.startsWith('Arrow')) {
+        event.preventDefault();
+        if (character.mode !== 'manual' || character.routeActive) setActiveMode('manual');
+        character.joystick.set(Number(pressedKeys.has('ArrowRight')) - Number(pressedKeys.has('ArrowLeft')), Number(pressedKeys.has('ArrowDown')) - Number(pressedKeys.has('ArrowUp')));
+      }
+    });
+    addEventListener('blur', () => { pressedKeys.clear(); character.joystick.set(0, 0); });
+    addEventListener('keyup', event => {
+      pressedKeys.delete(event.code);
+      if (event.code.startsWith('Arrow')) character.joystick.set(Number(pressedKeys.has('ArrowRight')) - Number(pressedKeys.has('ArrowLeft')), Number(pressedKeys.has('ArrowDown')) - Number(pressedKeys.has('ArrowUp')));
+    });
     let lookPointer: number | null = null;
     let previousX = 0;
     let previousY = 0;
     canvas.addEventListener('pointerdown', event => {
-      if (renderer.xr.isPresenting) return;
+      if (renderer.xr.isPresenting || gizmo.dragging || (gizmo.enabled && gizmo.axis)) return;
       lookPointer = event.pointerId;
       previousX = event.clientX;
       previousY = event.clientY;
       canvas.setPointerCapture(event.pointerId);
     });
     canvas.addEventListener('pointermove', event => {
-      if (lookPointer !== event.pointerId || renderer.xr.isPresenting) return;
+      if (lookPointer !== event.pointerId || renderer.xr.isPresenting || gizmo.dragging) return;
       yaw -= (event.clientX - previousX) * 0.004;
       pitch -= (event.clientY - previousY) * 0.004;
       pitch = THREE.MathUtils.clamp(pitch, -1.25, 1.1);
@@ -381,6 +531,7 @@ async function bootstrap(): Promise<void> {
   }
 
   function updateFreeCamera(delta: number): void {
+    if (gizmo.dragging) return;
     const input = new THREE.Vector3(
       Number(pressedKeys.has('KeyD')) - Number(pressedKeys.has('KeyA')),
       Number(pressedKeys.has('KeyE')) - Number(pressedKeys.has('KeyQ')),
@@ -414,14 +565,19 @@ async function bootstrap(): Promise<void> {
   }
 
   function setActiveMode(mode: MovementMode): void {
+    tour = false; stationRunning = false;
     character.setMode(mode, xrEnvironment.cursor.valid ? xrEnvironment.cursor.position : null);
-    document.querySelectorAll<HTMLButtonElement>('.mode').forEach(button => button.classList.toggle('active', button.dataset.mode === mode));
+    behaviorSelect.value = mode;
+    updateBehaviorDescription();
   }
 
   function updateRuntimeStats(delta: number): void {
     planeCount.textContent = String(xrEnvironment.planeCount);
     depthCount.textContent = String(xrEnvironment.depthTriangleCount);
-    motionState.textContent = character.motionState;
+    motionState.textContent = character.motionState === 'walk' ? (LOCOMOTION_STYLES.find(s => s.id === character.locomotionStyle)?.label ?? 'walk') : character.motionState;
+    behaviorSelect.value = character.mode;
+    element('task-status').textContent = character.activity + ' · ' + (config.character.moveSpeedMetersPerSecond === 0 ? '速度为 0，运动暂停' : character.navigator.status);
+    element('tour-stations').textContent = tour ? '停止巡展' : '全部巡展';
     if (renderer.xr.isPresenting) {
       depthBadge.textContent = xrEnvironment.depthAvailable ? '实时深度启用' : '平面碰撞模式';
       depthBadge.className = xrEnvironment.depthAvailable ? 'badge' : 'badge warn';
@@ -433,9 +589,7 @@ async function bootstrap(): Promise<void> {
       fpsAccumulator = 0;
       frameCounter = 0;
     }
-    if (character.mode === 'manual' && !document.querySelector('.mode[data-mode="manual"]')?.classList.contains('active')) {
-      document.querySelectorAll<HTMLButtonElement>('.mode').forEach(button => button.classList.toggle('active', button.dataset.mode === 'manual'));
-    }
+
   }
 }
 

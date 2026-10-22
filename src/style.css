@@ -246,3 +246,18 @@ button:disabled { opacity: 0.42; cursor: not-allowed; }
   .left-panel .wide { display:inline-flex; width:calc(50% - 4px); padding:0 7px; align-items:center; justify-content:center; }
   .mode-grid { margin-top:2px; }
 }
+
+/* The control deck stays scrollable independently of the 3D canvas. */
+select { width: 100%; min-height: 38px; padding: 8px 10px; color: #e7fff3; background: #17392d; border: 1px solid var(--line); border-radius: 10px; font: inherit; font-size: 12px; }
+select:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
+.control-label { display: block; margin: 9px 2px 5px; color: #bad6c9; font-size: 11px; }
+.left-panel { width: 250px; scrollbar-width: thin; scrollbar-color: #477763 transparent; }
+.left-panel .check-row { display: flex; gap: 7px; align-items: center; margin: 10px 0; font-size: 11px; color: #c1e2d2; }
+.debug-panel { max-height: calc(100dvh - 220px); overflow-y: auto; touch-action: pan-y; }
+.in-ar #demo-station, .in-ar #start-station, .in-ar #tour-stations, .in-ar #station-description, .in-ar label:has(#gizmo-enabled), .in-ar label:has(#gizmo-snap) { display: none; }
+@media (max-width: 720px) {
+  .left-panel { width: 198px; max-height: calc(100dvh - 235px); }
+  .left-panel .preview-status { font-size: 10px; }
+  select { font-size: 11px; }
+  .debug-panel { z-index: 4; }
+}

@@ -1,12 +1,17 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { VRMLoaderPlugin, VRMUtils, type VRM, type VRMHumanBoneName } from '@pixiv/three-vrm';
+import { VRMLoaderPlugin, VRMUtils, type VRM } from '@pixiv/three-vrm';
 import {
   VRMAnimationLoaderPlugin,
   createVRMAnimationClip,
   VRMLookAtQuaternionProxy,
   type VRMAnimation,
 } from '@pixiv/three-vrm-animation';
+import { Navigator, type NavigationMode } from './navigation';
+import { BehaviorPlanner } from './behaviors';
+import { ProceduralLocomotion, LOCOMOTION_STYLES, type LocomotionStyle } from './locomotion';
+import { createDemoCharacter } from './demo-character';
+import { setLegacyShadeCompatibility } from './material-compat';
 import type { CollisionWorld, DemoConfig, MotionState, MovementMode } from './app-types';
 
 type Toast = (message: string, error?: boolean) => void;
@@ -16,7 +21,18 @@ export class CharacterController {
   readonly position = this.root.position;
   readonly joystick = new THREE.Vector2();
   mode: MovementMode = 'manual';
-  snapshotTarget: THREE.Vector3 | null = null;
+  readonly navigator = new Navigator();
+  private readonly behavior = new BehaviorPlanner();
+  locomotionStyle: LocomotionStyle = 'walk';
+  activity = '待命';
+  manipulating = false;
+  shadeCompatibility = true;
+  repairedMaterialCount = 0;
+  private procedural: ProceduralLocomotion | null = null;
+  private demoScene: THREE.Group | null = null;
+  private route: { points: THREE.Vector3[]; index: number; traversal: 'ground' | 'ladder' | 'swim' } | null = null;
+  private stalledSeconds = 0;
+  private worldMeshes: THREE.Mesh[] = [];
   loaded = false;
   grounded = false;
   motionState: MotionState = 'idle';
@@ -29,8 +45,6 @@ export class CharacterController {
   previewFileName: string | null = null;
   private velocityY = 0;
   private capsuleDebug: THREE.LineSegments | null = null;
-  private fallbackBones = new Map<VRMHumanBoneName, { node: THREE.Object3D; rest: THREE.Quaternion }>();
-  private animationTime = 0;
   private readonly raycaster = new THREE.Raycaster();
 
   constructor(
@@ -41,10 +55,18 @@ export class CharacterController {
     this.root.name = 'VRM character root';
     this.scene.add(this.root);
     this.rebuildCapsuleDebug();
+    this.useDemoCharacter();
   }
 
   get capsuleRadius(): number { return this.config.character.capsule.radiusMeters; }
   get capsuleHeight(): number { return this.config.character.capsule.heightMeters; }
+  get hasVRM(): boolean { return this.vrm !== null; }
+  get navigationMode(): NavigationMode { return this.navigator.mode; }
+  get routeActive(): boolean { return this.route !== null; }
+  get effectiveHeight(): number {
+    const scale = LOCOMOTION_STYLES.find(style => style.id === this.locomotionStyle)?.capsuleScale ?? 1;
+    return Math.max(this.capsuleRadius * 2.05, this.capsuleHeight * scale);
+  }
   get previewing(): boolean { return this.previewAction !== null; }
   get previewPaused(): boolean { return this.previewAction?.paused ?? false; }
 
@@ -66,7 +88,9 @@ export class CharacterController {
         VRMUtils.deepDispose(this.vrm.scene);
       }
 
+      if (this.demoScene) { this.root.remove(this.demoScene); VRMUtils.deepDispose(this.demoScene); this.demoScene = null; }
       this.vrm = nextVrm;
+      this.repairedMaterialCount = setLegacyShadeCompatibility(nextVrm.scene, this.shadeCompatibility, nextVrm.meta?.metaVersion === '0');
       VRMUtils.removeUnnecessaryVertices(nextVrm.scene);
       VRMUtils.combineSkeletons(nextVrm.scene);
       VRMUtils.rotateVRM0(nextVrm);
@@ -88,7 +112,7 @@ export class CharacterController {
       this.mixer = new THREE.AnimationMixer(nextVrm.scene);
       this.actions = {};
       this.currentAction = null;
-      this.captureFallbackBonePose();
+      this.procedural = new ProceduralLocomotion(name => nextVrm.humanoid.getNormalizedBoneNode(name));
       await this.loadAnimations(nextVrm);
       this.loaded = true;
       this.setMotionState('idle', true);
@@ -146,6 +170,8 @@ export class CharacterController {
   }
 
   place(point: THREE.Vector3): void {
+    this.cancelRoute();
+    this.setMode('manual', null);
     this.position.copy(point);
     this.position.y += this.config.character.spawnLiftMeters;
     this.velocityY = 0;
@@ -153,9 +179,75 @@ export class CharacterController {
     this.root.visible = true;
   }
 
+  useDemoCharacter(): void {
+    this.stopAnimationPreview();
+    this.mixer?.stopAllAction();
+    if (this.vrm) { this.root.remove(this.vrm.scene); VRMUtils.deepDispose(this.vrm.scene); }
+    if (this.demoScene) { this.root.remove(this.demoScene); VRMUtils.deepDispose(this.demoScene); }
+    this.vrm = null; this.mixer = null; this.actions = {}; this.currentAction = null;
+    const demo = createDemoCharacter();
+    this.normalizeVisualSize(demo.scene);
+    this.demoScene = demo.scene;
+    this.root.add(demo.scene);
+    this.procedural = new ProceduralLocomotion(demo.getBone);
+    this.loaded = true;
+    this.root.visible = true;
+    this.repairedMaterialCount = 0;
+  }
+
+  setShadeCompatibility(enabled: boolean): void {
+    this.shadeCompatibility = enabled;
+    if (this.vrm) this.repairedMaterialCount = setLegacyShadeCompatibility(this.vrm.scene, enabled, this.vrm.meta?.metaVersion === '0');
+  }
+
+  setNavigationMode(mode: NavigationMode): void { this.navigator.mode = mode; this.navigator.reset(); }
+
+  setLocomotion(style: LocomotionStyle): void {
+    const nextHeight = this.capsuleHeight * (LOCOMOTION_STYLES.find(item => item.id === style)?.capsuleScale ?? 1);
+    if (nextHeight > this.effectiveHeight && !this.hasHeadroom(this.position, nextHeight, this.worldMeshes)) {
+      this.toast('头顶空间不足，请先离开低矮通道再起身', true);
+      return;
+    }
+    this.locomotionStyle = style;
+    this.navigator.reset();
+    this.setMotionState(this.motionState, true);
+  }
+
   setMode(mode: MovementMode, cursor: THREE.Vector3 | null): void {
+    this.cancelRoute();
     this.mode = mode;
-    this.snapshotTarget = mode === 'go-to' && cursor ? cursor.clone() : null;
+    this.behavior.setMode(mode, this.position, cursor);
+    this.navigator.reset();
+    this.stalledSeconds = 0;
+  }
+
+  startRoute(points: THREE.Vector3[], traversal: 'ground' | 'ladder' | 'swim' = 'ground'): void {
+    if (points.length < 2) return;
+    this.setMode('manual', null);
+    this.position.copy(points[0]);
+    this.velocityY = 0;
+    this.grounded = true;
+    this.route = { points: points.map(point => point.clone()), index: 1, traversal };
+    const facingPoint = points.find(point => Math.hypot(point.x - points[0].x, point.z - points[0].z) > 0.01);
+    if (facingPoint) this.turnToward(facingPoint.clone().sub(points[0]), 1);
+    this.root.visible = true;
+  }
+
+  cancelRoute(): void { this.route = null; this.navigator.reset(); }
+
+  beginManipulation(): void {
+    this.setMode('manual', null);
+    this.joystick.set(0, 0);
+    this.manipulating = true;
+    this.velocityY = 0;
+  }
+
+  endManipulation(): void {
+    this.manipulating = false;
+    this.velocityY = 0;
+    this.grounded = false;
+    this.behavior.reset(this.position);
+    this.navigator.reset();
   }
 
   jump(): void {
@@ -175,86 +267,101 @@ export class CharacterController {
     if (this.capsuleDebug) this.capsuleDebug.visible = visible;
   }
 
-  update(
-    deltaSeconds: number,
-    camera: THREE.Camera,
-    cursorPosition: THREE.Vector3 | null,
-    collisionWorld: CollisionWorld,
-  ): void {
-    if (!this.loaded || !this.vrm) return;
-    const delta = Math.min(deltaSeconds, 0.05);
-    const moveDirection = this.resolveDesiredDirection(camera, cursorPosition);
-    const moving = moveDirection.lengthSq() > 0.0001;
-    if (moving) this.applyHorizontalMovement(moveDirection.normalize(), delta, collisionWorld);
-    this.applyGravity(delta, collisionWorld);
-
-    if (!this.grounded) this.setMotionState('jump');
-    else this.setMotionState(moving ? 'walk' : 'idle');
-
+  update(deltaSeconds: number, camera: THREE.Camera, cursorPosition: THREE.Vector3 | null, world: CollisionWorld): void {
+    if (!this.loaded) return;
+    this.worldMeshes = world.meshes;
+    const delta = Math.min(Math.max(deltaSeconds, 0), 0.05);
+    const before = this.position.clone();
+    const speed = Math.max(0, this.config.character.moveSpeedMetersPerSecond)
+      * (LOCOMOTION_STYLES.find(style => style.id === this.locomotionStyle)?.speedMultiplier ?? 1);
+    if (!this.manipulating) {
+      let target: THREE.Vector3 | null = null;
+      let stopDistance = this.config.character.arrivalDistanceMeters;
+      if (this.route) {
+        stopDistance = 0.06;
+        target = this.route.points[this.route.index];
+        const distance = this.route.traversal === 'ground'
+          ? Math.hypot(target.x - this.position.x, target.z - this.position.z) : this.position.distanceTo(target);
+        if (distance < 0.12 && Math.abs(target.y - this.position.y) < 0.3) {
+          this.route.index++;
+          if (this.route.index >= this.route.points.length) { this.route = null; target = null; this.activity = '场景演示完成'; }
+          else { target = this.route.points[this.route.index]; this.navigator.reset(); }
+        }
+        if (this.route) this.activity = '场景路线 ' + this.route.index + '/' + (this.route.points.length - 1);
+      } else {
+        const cameraPosition = new THREE.Vector3(); camera.getWorldPosition(cameraPosition);
+        const result = this.behavior.update(speed > 0 ? delta : 0, this.position, cameraPosition, cursorPosition);
+        target = result.target;
+        stopDistance = result.stopDistance ?? (this.mode === 'follow-player' ? this.config.character.followDistanceMeters : stopDistance);
+        this.activity = result.activity ?? this.mode;
+        if (this.behavior.completed && this.mode === 'go-to') { this.mode = 'manual'; this.behavior.setMode('manual', this.position, null); }
+      }
+      const special = this.route && this.route.traversal !== 'ground';
+      if (special && target) {
+        const vector = target.clone().sub(this.position);
+        if (speed > 0) this.position.addScaledVector(vector.normalize(), Math.min(speed * delta, this.position.distanceTo(target)));
+        if (Math.hypot(vector.x, vector.z) > 0.1) this.turnToward(vector, delta);
+        this.grounded = true; this.velocityY = 0;
+      } else {
+        let direction = new THREE.Vector3();
+        if (this.joystick.length() > 0.08) {
+          const forward = new THREE.Vector3(); camera.getWorldDirection(forward); forward.y = 0;
+          if (forward.lengthSq() < 0.001) forward.set(0, 0, -1);
+          forward.normalize();
+          direction.set(-forward.z, 0, forward.x).multiplyScalar(this.joystick.x).addScaledVector(forward, -this.joystick.y);
+        } else if (target && (Math.hypot(target.x - this.position.x, target.z - this.position.z) > stopDistance || ((this.route || this.mode === 'go-to' || this.mode === 'follow-cursor') && Math.abs(target.y - this.position.y) > 0.3))) {
+          this.navigator.requireTargetHeight = this.route !== null || this.mode === 'go-to' || this.mode === 'follow-cursor';
+          direction = this.navigator.getDirection(this.position, target, world, this.capsuleRadius, this.effectiveHeight, this.config.character.maxStepHeightMeters, delta);
+        }
+        if (speed > 0 && direction.lengthSq() > 0.0001) {
+          const remaining = target && this.navigationMode === 'direct' ? Math.max(0, Math.hypot(target.x - this.position.x, target.z - this.position.z) - stopDistance * 0.5) : Infinity;
+          this.applyHorizontalMovement(direction.normalize(), Math.min(speed * delta, remaining), delta, world);
+        }
+        this.applyGravity(delta, world);
+        const moved = Math.hypot(this.position.x - before.x, this.position.z - before.z);
+        if (target && speed > 0 && moved < 0.00001 && this.mode !== 'manual') {
+          this.stalledSeconds += delta;
+          if (this.stalledSeconds > 4) { this.behavior.skipTarget(); this.navigator.reset(); this.stalledSeconds = 0; }
+        } else this.stalledSeconds = 0;
+      }
+    }
+    const traveled = this.position.distanceTo(before);
+    const moving = speed > 0 && !this.manipulating && traveled > 0.0001;
+    this.setMotionState(!this.grounded && !this.manipulating ? 'jump' : moving ? 'walk' : 'idle');
     this.mixer?.update(delta);
-    this.animationTime += delta;
-    if (!this.previewAction && !this.actions[this.motionState]) this.updateProceduralAnimation(delta);
-    this.vrm.update(delta);
+    if (!this.previewAction && (!this.currentAction || this.locomotionStyle !== 'walk')) {
+      this.procedural?.update(delta, this.locomotionStyle, moving, this.grounded || this.manipulating, moving ? traveled / Math.max(delta, 0.001) : 0);
+    }
+    this.vrm?.update(delta);
     if (this.capsuleDebug) {
-      this.capsuleDebug.position.set(this.position.x, this.position.y + this.capsuleHeight / 2, this.position.z);
+      this.capsuleDebug.position.set(this.position.x, this.position.y + this.effectiveHeight / 2, this.position.z);
+      this.capsuleDebug.scale.y = this.effectiveHeight / this.capsuleHeight;
       this.capsuleDebug.rotation.y = this.root.rotation.y;
     }
   }
 
-  private resolveDesiredDirection(camera: THREE.Camera, cursorPosition: THREE.Vector3 | null): THREE.Vector3 {
-    const manualMagnitude = this.joystick.length();
-    if (manualMagnitude > 0.08) {
-      const forward = new THREE.Vector3();
-      camera.getWorldDirection(forward);
-      forward.y = 0;
-      if (forward.lengthSq() < 0.001) forward.set(0, 0, -1);
-      forward.normalize();
-      const right = new THREE.Vector3(-forward.z, 0, forward.x);
-      return right.multiplyScalar(this.joystick.x).add(forward.multiplyScalar(-this.joystick.y));
-    }
-
-    let target: THREE.Vector3 | null = null;
-    let stopDistance = this.config.character.arrivalDistanceMeters;
-    if (this.mode === 'follow-player') {
-      target = new THREE.Vector3();
-      camera.getWorldPosition(target);
-      stopDistance = this.config.character.followDistanceMeters;
-    } else if (this.mode === 'follow-cursor') {
-      target = cursorPosition;
-    } else if (this.mode === 'go-to') {
-      target = this.snapshotTarget;
-    }
-
-    if (!target) return new THREE.Vector3();
-    const direction = target.clone().sub(this.position);
-    direction.y = 0;
-    if (direction.length() <= stopDistance) {
-      if (this.mode === 'go-to') {
-        this.snapshotTarget = null;
-        this.mode = 'manual';
-      }
-      return new THREE.Vector3();
-    }
-    return direction;
+  private applyHorizontalMovement(direction: THREE.Vector3, distance: number, delta: number, world: CollisionWorld): void {
+    if (!this.isBlocked(direction, distance, world.meshes)) this.position.addScaledVector(direction, distance);
+    this.turnToward(direction, delta);
   }
 
-  private applyHorizontalMovement(direction: THREE.Vector3, delta: number, world: CollisionWorld): void {
-    const distance = this.config.character.moveSpeedMetersPerSecond * delta;
-    const movement = direction.clone().multiplyScalar(distance);
-    if (!this.isBlocked(direction, distance, world.meshes)) this.position.add(movement);
-
-    const desiredYaw = Math.atan2(direction.x, direction.z);
-    let yawDifference = desiredYaw - this.root.rotation.y;
-    yawDifference = Math.atan2(Math.sin(yawDifference), Math.cos(yawDifference));
-    this.root.rotation.y += yawDifference * Math.min(1, this.config.character.turnSpeed * delta);
+  private turnToward(direction: THREE.Vector3, delta: number): void {
+    let desiredYaw = Math.atan2(direction.x, direction.z);
+    if (this.locomotionStyle === 'backward') desiredYaw += Math.PI;
+    if (this.locomotionStyle === 'strafe-left') desiredYaw -= Math.PI / 2;
+    if (this.locomotionStyle === 'strafe-right') desiredYaw += Math.PI / 2;
+    const difference = desiredYaw - this.root.rotation.y;
+    this.root.rotation.y += Math.atan2(Math.sin(difference), Math.cos(difference)) * Math.min(1, this.config.character.turnSpeed * delta);
   }
 
   private isBlocked(direction: THREE.Vector3, distance: number, meshes: THREE.Mesh[]): boolean {
     if (!meshes.length) return false;
+    const destination = this.position.clone().addScaledVector(direction, distance + this.capsuleRadius);
+    if (!this.hasHeadroom(destination, this.effectiveHeight, meshes)) return true;
     const samples = [
-      this.capsuleRadius * 1.05,
-      this.capsuleHeight * 0.52,
-      this.capsuleHeight - this.capsuleRadius * 1.05,
+      Math.max(this.capsuleRadius * 1.05, this.grounded ? this.config.character.maxStepHeightMeters + 0.06 : 0),
+      this.effectiveHeight * 0.52,
+      this.effectiveHeight - this.capsuleRadius * 0.3,
     ];
     const lateral = new THREE.Vector3(-direction.z, 0, direction.x).multiplyScalar(this.capsuleRadius * 0.72);
     for (const height of samples) {
@@ -271,6 +378,17 @@ export class CharacterController {
       }
     }
     return false;
+  }
+
+  private hasHeadroom(position: THREE.Vector3, height: number, meshes: THREE.Mesh[]): boolean {
+    this.raycaster.near = 0;
+    const clearance = this.config.character.maxStepHeightMeters + 0.04;
+    this.raycaster.far = Math.max(0, height - clearance);
+    for (const [x, z] of [[0, 0], [this.capsuleRadius * 0.7, 0], [-this.capsuleRadius * 0.7, 0], [0, this.capsuleRadius * 0.7], [0, -this.capsuleRadius * 0.7]]) {
+      this.raycaster.set(new THREE.Vector3(position.x + x, position.y + clearance, position.z + z), new THREE.Vector3(0, 1, 0));
+      if (this.raycaster.intersectObjects(meshes, false).length) return false;
+    }
+    return true;
   }
 
   private applyGravity(delta: number, world: CollisionWorld): void {
@@ -338,51 +456,15 @@ export class CharacterController {
     const previous = this.currentAction;
     this.motionState = next;
     if (this.previewAction) return;
-    const nextAction = this.actions[next] ?? null;
+    const nextAction = this.locomotionStyle === 'walk' ? this.actions[next] ?? null : null;
     if (nextAction && nextAction !== previous) {
+      if (!previous) this.procedural?.reset();
       nextAction.reset().fadeIn(this.config.animations[next].fadeSeconds).play();
       previous?.fadeOut(this.config.animations[next].fadeSeconds);
       this.currentAction = nextAction;
     } else if (!nextAction) {
-      previous?.fadeOut(0.12);
+      this.mixer?.stopAllAction();
       this.currentAction = null;
-    }
-  }
-
-  private captureFallbackBonePose(): void {
-    this.fallbackBones.clear();
-    if (!this.vrm) return;
-    const names: VRMHumanBoneName[] = ['hips', 'chest', 'leftUpperArm', 'rightUpperArm', 'leftUpperLeg', 'rightUpperLeg', 'leftLowerLeg', 'rightLowerLeg'];
-    names.forEach(name => {
-      const node = this.vrm?.humanoid.getNormalizedBoneNode(name);
-      if (node) this.fallbackBones.set(name, { node, rest: node.quaternion.clone() });
-    });
-  }
-
-  private updateProceduralAnimation(_delta: number): void {
-    for (const { node, rest } of this.fallbackBones.values()) node.quaternion.copy(rest);
-    const swing = Math.sin(this.animationTime * 9) * 0.5;
-    const applyX = (name: VRMHumanBoneName, angle: number) => {
-      const bone = this.fallbackBones.get(name);
-      if (!bone) return;
-      bone.node.quaternion.copy(bone.rest).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(angle, 0, 0)));
-    };
-    if (this.motionState === 'walk') {
-      applyX('leftUpperLeg', swing);
-      applyX('rightUpperLeg', -swing);
-      applyX('leftUpperArm', -swing * 0.7);
-      applyX('rightUpperArm', swing * 0.7);
-      applyX('leftLowerLeg', Math.max(0, -swing) * 0.55);
-      applyX('rightLowerLeg', Math.max(0, swing) * 0.55);
-    } else if (this.motionState === 'jump') {
-      applyX('leftUpperLeg', -0.35);
-      applyX('rightUpperLeg', -0.35);
-      applyX('leftUpperArm', -1.2);
-      applyX('rightUpperArm', -1.2);
-    } else {
-      applyX('chest', Math.sin(this.animationTime * 1.7) * 0.025);
-      applyX('leftUpperArm', 0.05 + Math.sin(this.animationTime * 1.7) * 0.02);
-      applyX('rightUpperArm', 0.05 - Math.sin(this.animationTime * 1.7) * 0.02);
     }
   }
 
