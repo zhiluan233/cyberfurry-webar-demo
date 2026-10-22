@@ -13,6 +13,13 @@ interface Search {
   closed: Set<string>;
   visited: number;
 }
+interface Smoothing {
+  raw: Vector3[];
+  anchor: Vector3;
+  anchorIndex: number;
+  candidate: number;
+  result: Vector3[];
+}
 
 const DOWN = new Vector3(0, -1, 0);
 const DIRECTIONS = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]];
@@ -26,6 +33,7 @@ export class Navigator {
   status = '等待目标';
   path: Vector3[] = [];
   private search: Search | null = null;
+  private smoothing: Smoothing | null = null;
   private colliders: Collider[] = [];
   private readonly boundsVersions = new WeakMap<BufferGeometry, number>();
   private readonly ray = new Raycaster();
@@ -43,6 +51,7 @@ export class Navigator {
 
   reset(): void {
     this.search = null;
+    this.smoothing = null;
     this.path = [];
     this.colliders = [];
     this.lastTarget = null;
@@ -70,19 +79,28 @@ export class Navigator {
     this.height = Math.max(this.radius * 2, height);
     this.step = Math.max(0, maxStep);
     const changedWorld = world.meshes.length !== this.colliders.length || world.meshes.some((mesh, i) => mesh !== this.colliders[i]?.source);
-    const movedTarget = !this.lastTarget || flatDistance(this.lastTarget, target) > Math.max(0.45, radius * 1.5);
+    // A slowly moving target can stay below the usual replan threshold indefinitely.
+    // Adopt its precise location near the last waypoint without interrupting long valid routes.
+    const shiftedEndpoint = this.path.length === 1
+      && flatDistance(position, this.path[0]) < Math.max(0.12, this.radius * 0.75)
+      && flatDistance(this.path[0], target) > 0.06;
+    const movedTarget = !this.lastTarget || flatDistance(this.lastTarget, target) > Math.max(0.45, radius * 1.5)
+      || (this.requireTargetHeight && Math.abs(this.lastTarget.y - target.y) > 0.1) || shiftedEndpoint;
     if (changedSize || changedWorld || !this.lastTarget || (movedTarget && this.sincePlan >= 0.45)
-      || (this.failed && this.sincePlan >= 2.0) || (!this.search && this.sincePlan >= 4)) {
+      || (this.failed && this.sincePlan >= 2.0)) {
       this.begin(position, target, world.meshes);
     }
-    if (this.search) this.expand();
+    if (this.smoothing) this.smooth();
+    else if (this.search) this.expand();
     if (!this.path.length) return new Vector3();
 
-    while (this.path.length > 1 && flatDistance(position, this.path[0]) < Math.max(0.1, this.radius * 0.65)) this.path.shift();
-    if (flatDistance(position, this.path[0]) < 0.06) {
-      if (this.path.length === 1) { this.status = '已抵达'; return new Vector3(); }
+    while (this.path.length > 1 && flatDistance(position, this.path[0]) < Math.max(0.1, this.radius * 0.65)) {
+      // Rounding off a waypoint early is safe only if the new edge still clears its corner.
+      const next = this.edge(position, this.path[1]);
+      if (!next || Math.abs(next.y - this.path[1].y) >= 0.08) break;
       this.path.shift();
     }
+    if (this.path.length === 1 && flatDistance(position, this.path[0]) < 0.06) { this.status = '已抵达'; return new Vector3(); }
     // Recheck the next edge against live meshes. Changed XR surfaces cannot leave a stale route traversable.
     if (this.sinceValidation >= 0.18) {
       this.refreshColliders(world.meshes);
@@ -100,6 +118,7 @@ export class Navigator {
   private begin(position: Vector3, target: Vector3, meshes: Mesh[]): void {
     this.refreshColliders(meshes);
     this.search = null;
+    this.smoothing = null;
     this.path = [];
     this.failed = false;
     this.lastTarget = target.clone();
@@ -142,9 +161,10 @@ export class Navigator {
           const reverse = [end];
           let cursor: SearchNode | null = node;
           while (cursor?.parent) { reverse.push(cursor.point.clone()); cursor = cursor.parent; }
-          this.path = reverse.reverse();
+          const raw = reverse.reverse();
+          this.smoothing = { raw, anchor: search.origin.clone(), anchorIndex: -1, candidate: Math.min(31, raw.length - 1), result: [] };
           this.search = null;
-          this.status = '沿路径移动';
+          this.status = '正在规划平滑路径';
           return;
         }
       }
@@ -169,6 +189,39 @@ export class Navigator {
       }
     }
     if (!search.open.length) this.fail('没有可达路径');
+  }
+
+  /** Pull the route taut without skipping body clearance, support, or a change of floor. */
+  private smooth(): void {
+    const smoothing = this.smoothing;
+    if (!smoothing) return;
+    const deadline = performance.now() + 5;
+    let checks = 0;
+    while (checks < 8 && performance.now() < deadline) {
+      const candidate = smoothing.raw[smoothing.candidate];
+      const end = this.edge(smoothing.anchor, candidate);
+      checks += 1;
+      // The same X/Z can be supported by several floors. A shortcut must reach this route's floor.
+      if (end && Math.abs(end.y - candidate.y) < 0.08) {
+        smoothing.result.push(end);
+        smoothing.anchor.copy(end);
+        smoothing.anchorIndex = smoothing.candidate;
+        if (smoothing.anchorIndex === smoothing.raw.length - 1) {
+          this.path = smoothing.result;
+          this.smoothing = null;
+          this.status = '沿路径移动';
+          return;
+        }
+        // Bound each shortcut's work even for very long, narrow routes.
+        smoothing.candidate = Math.min(smoothing.anchorIndex + 32, smoothing.raw.length - 1);
+      } else {
+        smoothing.candidate -= 1;
+        if (smoothing.candidate <= smoothing.anchorIndex) {
+          this.fail('环境变化，暂时无法通行');
+          return;
+        }
+      }
+    }
   }
 
   private supported(x: number, z: number, referenceY: number): Vector3 | null {
@@ -262,7 +315,7 @@ export class Navigator {
   private matchesTargetHeight(ground: Vector3, target: Vector3): boolean {
     return !this.requireTargetHeight || Math.abs(ground.y - target.y) <= Math.max(0.12, this.step + 0.04);
   }
-  private fail(message: string): void { this.search = null; this.path = []; this.failed = true; this.status = message; }
+  private fail(message: string): void { this.search = null; this.smoothing = null; this.path = []; this.failed = true; this.status = message; }
 }
 
 function flatDistance(a: Vector3, b: Vector3): number { return Math.hypot(a.x - b.x, a.z - b.z); }

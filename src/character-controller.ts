@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { VRMLoaderPlugin, VRMUtils, type VRM } from '@pixiv/three-vrm';
+import { VRMLoaderPlugin, VRMUtils, type VRM, type VRMHumanBoneName } from '@pixiv/three-vrm';
 import {
   VRMAnimationLoaderPlugin,
   createVRMAnimationClip,
@@ -10,9 +10,10 @@ import {
 import { Navigator, type NavigationMode } from './navigation';
 import { BehaviorPlanner } from './behaviors';
 import { ProceduralLocomotion, LOCOMOTION_STYLES, type LocomotionStyle } from './locomotion';
-import { createDemoCharacter } from './demo-character';
 import { setLegacyShadeCompatibility } from './material-compat';
 import type { CollisionWorld, DemoConfig, MotionState, MovementMode } from './app-types';
+
+type PreviewRigFactory = () => { scene: THREE.Group; getBone: (name: VRMHumanBoneName) => THREE.Object3D | null };
 
 type Toast = (message: string, error?: boolean) => void;
 
@@ -31,7 +32,11 @@ export class CharacterController {
   private procedural: ProceduralLocomotion | null = null;
   private demoScene: THREE.Group | null = null;
   private route: { points: THREE.Vector3[]; index: number; traversal: 'ground' | 'ladder' | 'swim' } | null = null;
-  private stalledSeconds = 0;
+  private completedRoute = false;
+  private movementIntent = false;
+  private cursorMovementIntent = false;
+  private intentInitialized = false;
+  private manipulationOrigin: THREE.Vector3 | null = null;
   private worldMeshes: THREE.Mesh[] = [];
   loaded = false;
   grounded = false;
@@ -55,7 +60,7 @@ export class CharacterController {
     this.root.name = 'VRM character root';
     this.scene.add(this.root);
     this.rebuildCapsuleDebug();
-    this.useDemoCharacter();
+    this.root.visible = false;
   }
 
   get capsuleRadius(): number { return this.config.character.capsule.radiusMeters; }
@@ -170,22 +175,21 @@ export class CharacterController {
   }
 
   place(point: THREE.Vector3): void {
-    this.cancelRoute();
-    this.setMode('manual', null);
     this.position.copy(point);
     this.position.y += this.config.character.spawnLiftMeters;
     this.velocityY = 0;
     this.grounded = false;
+    this.navigator.reset();
     this.root.visible = true;
   }
 
-  useDemoCharacter(): void {
+  useDemoCharacter(factory: PreviewRigFactory): void {
     this.stopAnimationPreview();
     this.mixer?.stopAllAction();
     if (this.vrm) { this.root.remove(this.vrm.scene); VRMUtils.deepDispose(this.vrm.scene); }
     if (this.demoScene) { this.root.remove(this.demoScene); VRMUtils.deepDispose(this.demoScene); }
     this.vrm = null; this.mixer = null; this.actions = {}; this.currentAction = null;
-    const demo = createDemoCharacter();
+    const demo = factory();
     this.normalizeVisualSize(demo.scene);
     this.demoScene = demo.scene;
     this.root.add(demo.scene);
@@ -218,7 +222,9 @@ export class CharacterController {
     this.mode = mode;
     this.behavior.setMode(mode, this.position, cursor);
     this.navigator.reset();
-    this.stalledSeconds = 0;
+    this.movementIntent = false;
+    this.cursorMovementIntent = false;
+    this.intentInitialized = false;
   }
 
   startRoute(points: THREE.Vector3[], traversal: 'ground' | 'ladder' | 'swim' = 'ground'): void {
@@ -233,20 +239,20 @@ export class CharacterController {
     this.root.visible = true;
   }
 
-  cancelRoute(): void { this.route = null; this.navigator.reset(); }
+  cancelRoute(): void { this.route = null; this.completedRoute = false; this.navigator.reset(); }
 
   beginManipulation(): void {
-    this.setMode('manual', null);
-    this.joystick.set(0, 0);
+    if (this.manipulating) return;
+    this.manipulationOrigin = this.position.clone();
     this.manipulating = true;
     this.velocityY = 0;
   }
 
   endManipulation(): void {
     this.manipulating = false;
+    this.manipulationOrigin = null;
     this.velocityY = 0;
     this.grounded = false;
-    this.behavior.reset(this.position);
     this.navigator.reset();
   }
 
@@ -271,45 +277,60 @@ export class CharacterController {
     if (!this.loaded) return;
     this.worldMeshes = world.meshes;
     const delta = Math.min(Math.max(deltaSeconds, 0), 0.05);
-    const before = this.position.clone();
     const speed = Math.max(0, this.config.character.moveSpeedMetersPerSecond)
       * (LOCOMOTION_STYLES.find(style => style.id === this.locomotionStyle)?.speedMultiplier ?? 1);
-    if (!this.manipulating) {
+    // Dragging freezes task progression as well as physics, while the last desired gait keeps playing.
+    if (!this.manipulating || !this.intentInitialized) {
+      const intentPosition = this.manipulationOrigin ?? this.position;
+      const manualInput = this.joystick.length() > 0.08;
+      if (manualInput) { this.completedRoute = false; this.activity = '手动控制'; }
       let target: THREE.Vector3 | null = null;
       let stopDistance = this.config.character.arrivalDistanceMeters;
-      if (this.route) {
+      if (!manualInput && this.route) {
         stopDistance = 0.06;
         target = this.route.points[this.route.index];
         const distance = this.route.traversal === 'ground'
           ? Math.hypot(target.x - this.position.x, target.z - this.position.z) : this.position.distanceTo(target);
-        if (distance < 0.12 && Math.abs(target.y - this.position.y) < 0.3) {
+        if (!this.manipulating && distance < 0.12 && Math.abs(target.y - this.position.y) < 0.3) {
           this.route.index++;
-          if (this.route.index >= this.route.points.length) { this.route = null; target = null; this.activity = '场景演示完成'; }
+          if (this.route.index >= this.route.points.length) {
+            this.route = null; target = null; this.completedRoute = true;
+            this.navigator.reset(); this.activity = '场景演示完成';
+          }
           else { target = this.route.points[this.route.index]; this.navigator.reset(); }
         }
         if (this.route) this.activity = '场景路线 ' + this.route.index + '/' + (this.route.points.length - 1);
-      } else {
+      } else if (!manualInput) {
         const cameraPosition = new THREE.Vector3(); camera.getWorldPosition(cameraPosition);
-        const result = this.behavior.update(speed > 0 ? delta : 0, this.position, cameraPosition, cursorPosition);
+        const result = this.behavior.update(speed > 0 && !this.manipulating ? delta : 0, intentPosition, cameraPosition, cursorPosition);
         target = result.target;
         stopDistance = result.stopDistance ?? (this.mode === 'follow-player' ? this.config.character.followDistanceMeters : stopDistance);
-        this.activity = result.activity ?? this.mode;
-        if (this.behavior.completed && this.mode === 'go-to') { this.mode = 'manual'; this.behavior.setMode('manual', this.position, null); }
+        if (!this.completedRoute) this.activity = result.activity ?? this.mode;
+        if (this.behavior.completed && this.mode === 'go-to') this.navigator.reset();
       }
-      const special = this.route && this.route.traversal !== 'ground';
-      if (special && target) {
+      const special = !manualInput && this.route && this.route.traversal !== 'ground';
+      const hasMoveGoal = target !== null && (special ? intentPosition.distanceTo(target) > 0.001
+        : Math.hypot(target.x - intentPosition.x, target.z - intentPosition.z) > stopDistance
+          || ((this.route || this.mode === 'go-to' || this.mode === 'follow-cursor') && Math.abs(target.y - intentPosition.y) > 0.3));
+      // Missing external observations are not an arrival or an instruction to change the animation.
+      // Keep the animation intent only; no stale target is used to invent physical movement.
+      if (!manualInput && this.mode === 'follow-cursor' && cursorPosition !== null) this.cursorMovementIntent = Boolean(hasMoveGoal);
+      this.movementIntent = manualInput || Boolean(hasMoveGoal)
+        || (this.mode === 'follow-cursor' && cursorPosition === null && this.cursorMovementIntent);
+      this.intentInitialized = true;
+      if (!this.manipulating && special && target) {
         const vector = target.clone().sub(this.position);
         if (speed > 0) this.position.addScaledVector(vector.normalize(), Math.min(speed * delta, this.position.distanceTo(target)));
         if (Math.hypot(vector.x, vector.z) > 0.1) this.turnToward(vector, delta);
         this.grounded = true; this.velocityY = 0;
-      } else {
+      } else if (!this.manipulating) {
         let direction = new THREE.Vector3();
-        if (this.joystick.length() > 0.08) {
+        if (manualInput) {
           const forward = new THREE.Vector3(); camera.getWorldDirection(forward); forward.y = 0;
           if (forward.lengthSq() < 0.001) forward.set(0, 0, -1);
           forward.normalize();
           direction.set(-forward.z, 0, forward.x).multiplyScalar(this.joystick.x).addScaledVector(forward, -this.joystick.y);
-        } else if (target && (Math.hypot(target.x - this.position.x, target.z - this.position.z) > stopDistance || ((this.route || this.mode === 'go-to' || this.mode === 'follow-cursor') && Math.abs(target.y - this.position.y) > 0.3))) {
+        } else if (target && hasMoveGoal) {
           this.navigator.requireTargetHeight = this.route !== null || this.mode === 'go-to' || this.mode === 'follow-cursor';
           direction = this.navigator.getDirection(this.position, target, world, this.capsuleRadius, this.effectiveHeight, this.config.character.maxStepHeightMeters, delta);
         }
@@ -318,19 +339,16 @@ export class CharacterController {
           this.applyHorizontalMovement(direction.normalize(), Math.min(speed * delta, remaining), delta, world);
         }
         this.applyGravity(delta, world);
-        const moved = Math.hypot(this.position.x - before.x, this.position.z - before.z);
-        if (target && speed > 0 && moved < 0.00001 && this.mode !== 'manual') {
-          this.stalledSeconds += delta;
-          if (this.stalledSeconds > 4) { this.behavior.skipTarget(); this.navigator.reset(); this.stalledSeconds = 0; }
-        } else this.stalledSeconds = 0;
       }
     }
-    const traveled = this.position.distanceTo(before);
-    const moving = speed > 0 && !this.manipulating && traveled > 0.0001;
+    if (this.manipulating && this.mode === 'manual' && !this.route) this.movementIntent = this.joystick.length() > 0.08;
+    const moving = speed > 0 && this.movementIntent;
     this.setMotionState(!this.grounded && !this.manipulating ? 'jump' : moving ? 'walk' : 'idle');
+    // Treat the configured default 1.1 m/s gait as 1x clip playback, including when travel is blocked.
+    this.currentAction?.setEffectiveTimeScale(this.motionState === 'walk' ? speed / 1.1 : 1);
     this.mixer?.update(delta);
     if (!this.previewAction && (!this.currentAction || this.locomotionStyle !== 'walk')) {
-      this.procedural?.update(delta, this.locomotionStyle, moving, this.grounded || this.manipulating, moving ? traveled / Math.max(delta, 0.001) : 0);
+      this.procedural?.update(delta, this.locomotionStyle, moving, this.grounded || this.manipulating, moving ? speed : 0);
     }
     this.vrm?.update(delta);
     if (this.capsuleDebug) {

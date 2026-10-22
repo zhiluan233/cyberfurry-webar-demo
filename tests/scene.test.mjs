@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import * as THREE from 'three';
+import { createDemoCharacter } from '../src/demo-character.ts';
 import { CharacterController } from '../src/character-controller.ts';
 import { createNatureScene } from '../src/nature-scene.ts';
 import { LOCOMOTION_STYLES } from '../src/locomotion.ts';
@@ -14,6 +15,7 @@ const world = { meshes: nature.colliders };
 
 function setup() {
   const character = new CharacterController(new THREE.Scene(), structuredClone(baseConfig), () => {});
+  character.useDemoCharacter(createDemoCharacter);
   const camera = new THREE.PerspectiveCamera();
   return { character, camera };
 }
@@ -54,7 +56,7 @@ test('direct movement stops a standing character at the crawl tunnel roof, while
   assert.equal(character.routeActive, false, 'reduced capsule must traverse the tunnel');
 });
 
-test('gizmo release lands on an elevated platform and leaves no old movement task', () => {
+test('gizmo release lands on an elevated platform while preserving the original patrol', () => {
   const { character, camera } = setup();
   const platform = new THREE.Mesh(new THREE.BoxGeometry(4, 0.2, 4), new THREE.MeshBasicMaterial());
   platform.position.y = 1.9;
@@ -66,7 +68,8 @@ test('gizmo release lands on an elevated platform and leaves no old movement tas
   assert.equal(character.position.y, 4);
   character.endManipulation();
   tick(character, camera, 180, { meshes: [platform] });
-  assert.equal(character.mode, 'manual');
+  assert.equal(character.mode, 'random-patrol');
+  assert.equal(character.motionState, 'walk');
   assert.ok(Math.abs(character.position.y - 2) < 0.00001);
   assert.equal(character.position.x, 0);
   assert.equal(character.position.z, 0);

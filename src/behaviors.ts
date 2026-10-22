@@ -40,7 +40,6 @@ export class BehaviorPlanner {
   private target: Vector3 | null = null;
   private waypoint = 0;
   private pause = 0;
-  private goalAge = 0;
   private retreating = false;
   private heading = 0;
   private playerInitialized = false;
@@ -60,25 +59,14 @@ export class BehaviorPlanner {
     this.target = null;
     this.waypoint = 0;
     this.pause = 0;
-    this.goalAge = 0;
     this.retreating = false;
     this.completed = false;
     this.playerInitialized = false;
     this.heading = 0;
   }
 
-  /** Skip an unreachable autonomous waypoint; explicit user targets stay intact. */
-  skipTarget(): void {
-    if (['manual', 'go-to', 'follow-player', 'follow-cursor'].includes(this.mode)) return;
-    this.target = null;
-    this.waypoint += 1;
-    this.pause = 0.5;
-    this.goalAge = 0;
-  }
-
   update(delta: number, position: Vector3, cameraPosition: Vector3, cursor: Vector3 | null): BehaviorIntent {
     const dt = Number.isFinite(delta) ? Math.max(0, Math.min(delta, 0.1)) : 0;
-    this.goalAge += dt;
     const player = cameraPosition.clone();
     player.y = position.y;
     if (this.playerInitialized) {
@@ -129,18 +117,17 @@ export class BehaviorPlanner {
       return { target: this.retreating ? this.awayFrom(player, position, 5) : player, stopDistance: this.retreating ? 0.2 : 1.5, activity: this.retreating ? '退回远处' : '接近玩家' };
     }
 
-    const arrived = this.target !== null && flatDistance(position, this.target) < 0.24;
-    // Time out blocked autonomous goals even in direct mode. They never teleport.
-    if (arrived || (this.target && this.goalAge > 16)) {
+    const arrived = this.target !== null && flatDistance(position, this.target) < 0.24 && Math.abs(position.y - this.target.y) < 0.3;
+    // An obstruction is not an arrival. Autonomous goals keep their identity
+    // until reached, so navigation retries and temporary manipulation can resume.
+    if (arrived) {
       this.target = null;
       this.waypoint += 1;
-      this.goalAge = 0;
       this.pause = ['orbit', 'figure-eight'].includes(this.mode) ? 0 : this.mode === 'wander' ? 1.5 + this.random() * 2 : 0.8;
-      if (this.pause) return { target: null, activity: arrived ? '抵达路点 · 观察' : '重新选择巡逻点' };
+      if (this.pause) return { target: null, activity: '抵达路点 · 观察' };
     }
     if (!this.target) {
       this.target = this.nextWaypoint(position);
-      this.goalAge = 0;
     }
     return { target: this.target.clone(), stopDistance: 0.18, activity: `${BEHAVIORS.find(item => item.id === this.mode)?.label ?? '巡逻'} · 路点 ${this.waypoint + 1}` };
   }

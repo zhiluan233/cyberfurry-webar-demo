@@ -261,3 +261,6 @@ select:focus-visible, button:focus-visible, input:focus-visible { outline: 2px s
   select { font-size: 11px; }
   .debug-panel { z-index: 4; }
 }
+
+.in-ar #preview-tools { display: none; }
+#preview-tools .preview-controls { margin-top: 10px; }

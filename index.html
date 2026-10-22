@@ -31,7 +31,6 @@
       <section class="left-panel glass" aria-label="角色与行为">
         <input id="vrm-input" type="file" accept=".vrm,.glb,model/gltf-binary" hidden />
         <button id="load-vrm" class="wide" type="button">选择本地 VRM</button>
-        <button id="demo-character" class="wide" type="button">内置关节测试角色</button>
         <button id="place-character" class="wide accent" type="button" disabled>放置角色 / 锁定锚点</button>
 
         <div class="section-label">本地动画预览</div>
@@ -57,10 +56,19 @@
         <select id="demo-station" aria-label="演示场景"></select>
         <div id="station-description" class="preview-status"></div>
         <div class="preview-controls"><button id="start-station" type="button">演示此场景</button><button id="tour-stations" type="button">全部巡展</button></div>
+        <div id="preview-tools">
+        <div class="preview-controls"><button id="focus-character" type="button">聚焦角色</button><button id="pause-simulation" type="button">暂停演示</button></div>
+        <label class="check-row"><input id="follow-camera" type="checkbox" /> 跟拍角色</label>
+        <label class="control-label" for="simulation-speed">演示播放速度</label>
+        <select id="simulation-speed"><option value="1">正常速度</option><option value="0.5">半速 · 0.5×</option><option value="0.25">慢放 · 0.25×</option></select>
         <label class="check-row"><input id="gizmo-enabled" type="checkbox" /> Gizmo 移动角色</label>
         <label class="check-row"><input id="gizmo-snap" type="checkbox" /> 吸附到 0.25 m 网格</label>
+        <div id="character-position" class="preview-status">尚未载入角色</div>
+        <button id="undo-transform" class="wide" type="button" disabled>撤销上次拖动</button>
+        <div class="preview-status">拖动三轴或平面手柄；Esc 取消当前拖动。</div>
+        </div>
         <div id="task-status" class="preview-status" role="status"></div>
-        <p id="status-copy">已启用内置测试角色。双击地面设置目标；拖动三轴 Gizmo 移动角色。</p>
+        <p id="status-copy">请先选择本地 VRM。双击地面设置目标，或使用 Gizmo 移动角色。</p>
       </section>
 
       <section id="debug-panel" class="debug-panel glass" hidden>
@@ -81,7 +89,7 @@
           <input id="move-speed" type="range" min="0" max="3.00" step="0.05" value="1.10" />
         </label>
         <label class="check-row"><input id="shade-compatibility" type="checkbox" checked /> 修复旧版 VRM 缺失阴影贴图</label>
-        <div id="material-status" class="preview-status">内置角色材质</div>
+        <div id="material-status" class="preview-status">尚未载入角色</div>
         <label><span>曝光 <output id="exposure-value">1.00</output></span><input id="exposure" type="range" min="0.5" max="1.5" step="0.05" value="1" /></label>
         <label class="check-row">
           <input id="show-geometry" type="checkbox" />

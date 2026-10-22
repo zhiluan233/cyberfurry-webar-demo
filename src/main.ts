@@ -9,6 +9,7 @@ import type { NavigationMode } from './navigation';
 import { createNatureScene } from './nature-scene';
 import type { MovementMode } from './app-types';
 import { XREnvironment } from './xr-environment';
+import { endGizmoDrag } from './preview-controls';
 
 function element<T extends HTMLElement>(id: string): T {
   const value = document.getElementById(id);
@@ -75,7 +76,7 @@ async function bootstrap(): Promise<void> {
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.0;
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.shadowMap.type = THREE.PCFShadowMap;
   renderer.xr.enabled = true;
   renderer.xr.setReferenceSpaceType('local-floor');
 
@@ -96,9 +97,23 @@ async function bootstrap(): Promise<void> {
   nature.group.updateMatrixWorld(true);
   const xrEnvironment = new XREnvironment(scene, config);
   const character = new CharacterController(scene, config, toast);
-  character.place(new THREE.Vector3(0, 0, 0));
-  placeButton.disabled = false;
-  jumpButton.disabled = false;
+  // Vite removes this branch and its dynamic import from production entirely.
+  if (import.meta.env.DEV) {
+    const { createDemoCharacter } = await import('./demo-character');
+    const demoButton = document.createElement('button');
+    demoButton.id = 'demo-character'; demoButton.className = 'wide'; demoButton.type = 'button';
+    demoButton.textContent = '开发用关节测试角色';
+    loadVRMButton.after(demoButton);
+    demoButton.addEventListener('click', () => {
+      finishInteraction();
+      character.useDemoCharacter(createDemoCharacter); character.place(new THREE.Vector3());
+      tour = false; stationRunning = false; updatePreviewControls(); updateMaterialStatus(); updateGizmo(); updateModelControls();
+      statusCopy.textContent = '开发用关节测试角色';
+    });
+    character.useDemoCharacter(createDemoCharacter);
+    character.place(new THREE.Vector3());
+    statusCopy.textContent = '开发用关节测试角色 · 可导入 VRM 检查实际模型';
+  }
   const gizmo = new TransformControls(camera, canvas);
   gizmo.setMode('translate');
   gizmo.setSpace('world');
@@ -117,6 +132,15 @@ async function bootstrap(): Promise<void> {
   pathLine.renderOrder = 5;
   scene.add(pathLine);
   let pathRefresh = 0;
+  let simulationPaused = false;
+  const followCamera = element<HTMLInputElement>('follow-camera');
+  const simulationSpeed = element<HTMLSelectElement>('simulation-speed');
+  let previousCharacterPosition = character.position.clone();
+  let transformStart: THREE.Vector3 | null = null;
+  let undoPosition: THREE.Vector3 | null = null;
+  let canvasPointer: number | null = null;
+  let lookPointer: number | null = null;
+  let resetJoystick = () => {};
 
   radiusInput.value = String(config.character.capsule.radiusMeters);
   heightInput.value = String(config.character.capsule.heightMeters);
@@ -130,7 +154,8 @@ async function bootstrap(): Promise<void> {
   let yaw = 0;
   let pitch = -0.13;
   const pressedKeys = new Set<string>();
-  const clock = new THREE.Clock();
+  const timer = new THREE.Timer();
+  timer.connect(document);
   let frameCounter = 0;
   let fpsAccumulator = 0;
 
@@ -142,19 +167,25 @@ async function bootstrap(): Promise<void> {
   setupMovementInterface();
 
   renderer.setAnimationLoop((time, frame) => {
-    const delta = clock.getDelta();
+    timer.update();
+    const delta = Math.min(timer.getDelta(), 0.05);
     if (!renderer.xr.isPresenting) updateFreeCamera(delta);
     const activeCamera = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
     xrEnvironment.update(time, frame, xrReferenceSpace, activeCamera, hitTestSource, nature.colliders);
     const worldMeshes = renderer.xr.isPresenting ? xrEnvironment.colliders : nature.colliders;
-    character.update(delta, activeCamera, xrEnvironment.cursor.valid ? xrEnvironment.cursor.position : null, { meshes: worldMeshes });
-    updateTour(delta);
+    const simulationDelta = renderer.xr.isPresenting ? delta : simulationPaused ? 0 : delta * Number(simulationSpeed.value);
+    if (simulationDelta > 0) character.update(simulationDelta, activeCamera, xrEnvironment.cursor.valid ? xrEnvironment.cursor.position : null, { meshes: worldMeshes });
+    updateTour(simulationDelta);
+    if (!renderer.xr.isPresenting && followCamera.checked && !gizmo.dragging && character.loaded) {
+      camera.position.add(character.position.clone().sub(previousCharacterPosition));
+    }
+    previousCharacterPosition.copy(character.position);
     pathRefresh += delta;
     if (pathRefresh > 0.15) {
       pathRefresh = 0;
       pathLine.geometry.dispose();
-      pathLine.geometry = new THREE.BufferGeometry().setFromPoints(character.navigator.path.map(p => p.clone().add(new THREE.Vector3(0, 0.045, 0))));
-      pathLine.visible = !renderer.xr.isPresenting && character.navigator.path.length > 1 && character.navigationMode === 'pathfinding';
+      pathLine.geometry = new THREE.BufferGeometry().setFromPoints([character.position, ...character.navigator.path].map(p => p.clone().add(new THREE.Vector3(0, 0.045, 0))));
+      pathLine.visible = !renderer.xr.isPresenting && character.navigator.path.length > 0 && character.navigationMode === 'pathfinding';
     }
     renderer.render(scene, camera);
     updateRuntimeStats(delta);
@@ -164,15 +195,10 @@ async function bootstrap(): Promise<void> {
     for (const item of BEHAVIORS) behaviorSelect.add(new Option(item.label, item.id));
     for (const item of LOCOMOTION_STYLES) styleSelect.add(new Option(item.label, item.id));
     for (const item of nature.stations) stationSelect.add(new Option(item.label, item.id));
-    updateBehaviorDescription(); updateStyleDescription(); updateStationDescription(); updatePreviewControls();
-    element('demo-character').addEventListener('click', () => {
-      character.useDemoCharacter(); character.place(new THREE.Vector3(0, 0, 0));
-      tour = false; stationRunning = false; updatePreviewControls(); updateMaterialStatus(); updateGizmo();
-      statusCopy.textContent = '内置关节测试角色';
-    });
+    updateBehaviorDescription(); updateStyleDescription(); updateStationDescription(); updatePreviewControls(); updateModelControls();
     navSelect.addEventListener('change', () => character.setNavigationMode(navSelect.value as NavigationMode));
     styleSelect.addEventListener('change', () => {
-      setActiveMode('manual'); character.setLocomotion(styleSelect.value as LocomotionStyle); styleSelect.value = character.locomotionStyle; updateStyleDescription();
+      character.setLocomotion(styleSelect.value as LocomotionStyle); styleSelect.value = character.locomotionStyle; updateStyleDescription();
     });
     behaviorSelect.addEventListener('change', () => {
       if (behaviorSelect.value === 'go-to' && !xrEnvironment.cursor.valid) { behaviorSelect.value = character.mode; toast('请对准地面，或双击地面设置目标', true); return; }
@@ -192,8 +218,14 @@ async function bootstrap(): Promise<void> {
     gizmoEnabled.addEventListener('change', updateGizmo);
     element<HTMLInputElement>('gizmo-snap').addEventListener('change', event => gizmo.setTranslationSnap((event.target as HTMLInputElement).checked ? 0.25 : null));
     gizmo.addEventListener('dragging-changed', event => {
-      if (event.value) { tour = false; stationRunning = false; character.beginManipulation(); pressedKeys.clear(); }
-      else character.endManipulation();
+      clearMovementInput();
+      if (event.value) {
+        transformStart = character.position.clone(); character.beginManipulation();
+      } else {
+        if (transformStart && transformStart.distanceToSquared(character.position) > 0.000001) undoPosition = transformStart.clone();
+        transformStart = null; character.endManipulation();
+        element<HTMLButtonElement>('undo-transform').disabled = undoPosition === null;
+      }
     });
     element<HTMLInputElement>('shade-compatibility').addEventListener('change', event => {
       character.setShadeCompatibility((event.target as HTMLInputElement).checked); updateMaterialStatus();
@@ -202,8 +234,31 @@ async function bootstrap(): Promise<void> {
       renderer.toneMappingExposure = Number((event.target as HTMLInputElement).value);
       element<HTMLOutputElement>('exposure-value').value = renderer.toneMappingExposure.toFixed(2);
     });
+    element('focus-character').addEventListener('click', focusCharacter);
+    element('pause-simulation').addEventListener('click', () => {
+      simulationPaused = !simulationPaused;
+      element('pause-simulation').textContent = simulationPaused ? '继续演示' : '暂停演示';
+    });
+    followCamera.addEventListener('change', () => {
+      if (playerDependentBehavior()) { followCamera.checked = false; toast('此行为用自由相机代表玩家，请使用 WASD 移动相机'); }
+      else if (followCamera.checked) focusCharacter();
+    });
+    element('undo-transform').addEventListener('click', () => {
+      finishInteraction();
+      if (!undoPosition) return;
+      character.beginManipulation(); character.position.copy(undoPosition); character.endManipulation();
+      undoPosition = null; element<HTMLButtonElement>('undo-transform').disabled = true;
+    });
+    canvas.addEventListener('pointerdown', event => {
+      if (!event.isPrimary || event.button !== 0) { event.stopImmediatePropagation(); return; }
+      canvasPointer = event.pointerId;
+    }, true);
+    canvas.addEventListener('pointercancel', finishInteraction);
+    canvas.addEventListener('lostpointercapture', finishInteraction);
+    addEventListener('blur', finishInteraction);
+    document.addEventListener('visibilitychange', () => { if (document.hidden) finishInteraction(); });
     canvas.addEventListener('dblclick', event => {
-      if (renderer.xr.isPresenting || gizmo.dragging || (gizmo.enabled && gizmo.axis)) return;
+      if (!character.loaded || renderer.xr.isPresenting || gizmo.dragging || (gizmo.enabled && gizmo.axis)) return;
       const rect = canvas.getBoundingClientRect();
       const ray = new THREE.Raycaster();
       ray.setFromCamera(new THREE.Vector2((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1), camera);
@@ -214,14 +269,46 @@ async function bootstrap(): Promise<void> {
   }
 
   function updateGizmo(): void {
+    finishInteraction();
     gizmo.enabled = gizmoEnabled.checked && !renderer.xr.isPresenting && character.loaded;
     if (gizmo.enabled) gizmo.attach(character.root); else gizmo.detach();
+  }
+
+  function clearMovementInput(): void {
+    resetJoystick();
+    pressedKeys.clear(); character.joystick.set(0, 0); joystickKnob.style.transform = 'translate(0, 0)';
+  }
+
+  function finishInteraction(): void {
+    const pointer = canvasPointer; canvasPointer = null; lookPointer = null;
+    endGizmoDrag(gizmo);
+    if (character.manipulating) character.endManipulation();
+    if (pointer !== null && canvas.hasPointerCapture(pointer)) canvas.releasePointerCapture(pointer);
+    clearMovementInput();
+  }
+
+  function playerDependentBehavior(): boolean {
+    return ['follow-player', 'follow-cursor', 'escort', 'flee', 'approach-retreat', 'guard'].includes(character.mode);
+  }
+
+  function focusCharacter(): void {
+    if (!character.loaded || renderer.xr.isPresenting) return;
+    const target = character.position.clone().add(new THREE.Vector3(0, character.effectiveHeight * 0.55, 0));
+    camera.position.copy(target).add(new THREE.Vector3(3.2, 1.25, 3.2));
+    camera.lookAt(target); camera.rotation.order = 'YXZ'; yaw = camera.rotation.y; pitch = camera.rotation.x;
+    previousCharacterPosition.copy(character.position);
+  }
+
+  function updateModelControls(): void {
+    for (const id of ['place-character', 'jump', 'start-station', 'tour-stations', 'target-cursor', 'stop-behavior', 'focus-character', 'pause-simulation', 'behavior-mode', 'locomotion-style', 'gizmo-enabled', 'gizmo-snap', 'follow-camera']) {
+      (element(id) as HTMLButtonElement | HTMLSelectElement | HTMLInputElement).disabled = !character.loaded;
+    }
   }
 
   function updateMaterialStatus(): void {
     element('material-status').textContent = character.hasVRM
       ? (character.shadeCompatibility ? '兼容修复已开启' : '使用原始材质') + ' · ' + character.repairedMaterialCount + ' 个缺失阴影贴图材质'
-      : '内置角色材质';
+      : character.loaded ? '开发测试角色材质' : '尚未载入角色';
   }
 
   function updateStyleDescription(): void {
@@ -235,7 +322,8 @@ async function bootstrap(): Promise<void> {
   }
 
   function startStation(): void {
-    if (renderer.xr.isPresenting) return;
+    if (renderer.xr.isPresenting || !character.loaded) return;
+    finishInteraction();
     const station = nature.stations.find(item => item.id === stationSelect.value);
     if (!station) return;
     gizmoEnabled.checked = false; updateGizmo();
@@ -247,18 +335,22 @@ async function bootstrap(): Promise<void> {
       character.place(station.waypoints[0]);
       character.setMode(station.behavior as MovementMode, station.waypoints[1] ?? null);
     } else character.startRoute(station.waypoints, station.traversal);
+    behaviorSelect.value = character.mode; updateBehaviorDescription();
     camera.position.copy(station.cameraPosition);
     camera.lookAt(station.waypoints[0].clone().add(new THREE.Vector3(0, 0.8, 0)));
     camera.rotation.order = 'YXZ'; yaw = camera.rotation.y; pitch = camera.rotation.x;
+    if (playerDependentBehavior()) followCamera.checked = false;
+    previousCharacterPosition.copy(character.position);
+    if (followCamera.checked) focusCharacter();
     stationElapsed = 0; stationRunning = true;
     statusCopy.textContent = station.label + ' · ' + station.description;
   }
 
   function updateTour(delta: number): void {
-    if (!stationRunning || !tour || config.character.moveSpeedMetersPerSecond === 0) return;
+    if (!stationRunning || !tour || character.manipulating || character.joystick.length() > 0.08 || config.character.moveSpeedMetersPerSecond === 0) return;
     stationElapsed += Math.min(delta, 0.05);
     const station = nature.stations.find(item => item.id === stationSelect.value);
-    if ((station?.behavior ? stationElapsed > 16 : !character.routeActive && stationElapsed > 2) || stationElapsed > 65) {
+    if (station?.behavior ? stationElapsed > 16 : !character.routeActive && stationElapsed > 2) {
       stationSelect.selectedIndex = (stationSelect.selectedIndex + 1) % nature.stations.length;
       updateStationDescription(); startStation();
     }
@@ -300,7 +392,9 @@ async function bootstrap(): Promise<void> {
       loadingElement.hidden = false;
       loadingElement.querySelector('b')!.textContent = '正在载入模型…';
       try {
+        finishInteraction();
         await character.loadFile(file);
+        updateModelControls();
         tour = false; stationRunning = false;
         placeButton.disabled = false;
         jumpButton.disabled = false;
@@ -356,7 +450,7 @@ async function bootstrap(): Promise<void> {
         toast('请把中央光标移动到地面或桌面。', true);
         return;
       }
-      tour = false; stationRunning = false;
+      finishInteraction();
       character.place(point);
       toast('角色已放置。');
     });
@@ -417,7 +511,7 @@ async function bootstrap(): Promise<void> {
       hitTestSource = (await xrSession.requestHitTestSource({ space: viewerSpace })) ?? null;
       tour = false; stationRunning = false;
       character.setMode('manual', null);
-      gizmo.detach(); gizmo.enabled = false;
+      finishInteraction(); gizmo.detach(); gizmo.enabled = false;
       document.body.classList.add('in-ar');
       nature.group.visible = false;
       scene.background = null;
@@ -459,6 +553,13 @@ async function bootstrap(): Promise<void> {
 
   function setupJoystick(): void {
     let pointerId: number | null = null;
+    resetJoystick = () => {
+      const pointer = pointerId;
+      pointerId = null;
+      if (pointer !== null && joystickElement.hasPointerCapture(pointer)) joystickElement.releasePointerCapture(pointer);
+      character.joystick.set(0, 0);
+      joystickKnob.style.transform = 'translate(0, 0)';
+    };
     const maxDistance = 38;
     const update = (event: PointerEvent) => {
       const box = joystickElement.getBoundingClientRect();
@@ -471,33 +572,33 @@ async function bootstrap(): Promise<void> {
       }
       character.joystick.set(dx / maxDistance, dy / maxDistance);
       joystickKnob.style.transform = `translate(${dx}px, ${dy}px)`;
-      if (character.mode !== 'manual' || character.routeActive) setActiveMode('manual');
     };
     joystickElement.addEventListener('pointerdown', event => {
+      if (pointerId !== null || gizmo.dragging || !character.loaded) return;
       pointerId = event.pointerId;
       joystickElement.setPointerCapture(pointerId);
       update(event);
     });
     joystickElement.addEventListener('pointermove', event => {
-      if (event.pointerId === pointerId) update(event);
+      if (event.pointerId === pointerId && !gizmo.dragging) update(event);
     });
     const release = (event: PointerEvent) => {
       if (event.pointerId !== pointerId) return;
-      pointerId = null;
-      character.joystick.set(0, 0);
-      joystickKnob.style.transform = 'translate(0, 0)';
+      resetJoystick();
     };
     joystickElement.addEventListener('pointerup', release);
     joystickElement.addEventListener('pointercancel', release);
+    joystickElement.addEventListener('lostpointercapture', release);
   }
 
   function setupCameraControls(): void {
     addEventListener('keydown', event => {
+      if (event.code === 'Escape' && gizmo.dragging) { gizmo.reset(); finishInteraction(); event.preventDefault(); return; }
+      if (gizmo.dragging) { if (event.code.startsWith('Arrow')) event.preventDefault(); return; }
       if ((event.target as HTMLElement)?.matches('input, select, button, textarea')) return;
       pressedKeys.add(event.code);
       if (event.code.startsWith('Arrow')) {
         event.preventDefault();
-        if (character.mode !== 'manual' || character.routeActive) setActiveMode('manual');
         character.joystick.set(Number(pressedKeys.has('ArrowRight')) - Number(pressedKeys.has('ArrowLeft')), Number(pressedKeys.has('ArrowDown')) - Number(pressedKeys.has('ArrowUp')));
       }
     });
@@ -506,10 +607,10 @@ async function bootstrap(): Promise<void> {
       pressedKeys.delete(event.code);
       if (event.code.startsWith('Arrow')) character.joystick.set(Number(pressedKeys.has('ArrowRight')) - Number(pressedKeys.has('ArrowLeft')), Number(pressedKeys.has('ArrowDown')) - Number(pressedKeys.has('ArrowUp')));
     });
-    let lookPointer: number | null = null;
     let previousX = 0;
     let previousY = 0;
     canvas.addEventListener('pointerdown', event => {
+      if (!event.isPrimary || event.button !== 0) return;
       if (renderer.xr.isPresenting || gizmo.dragging || (gizmo.enabled && gizmo.axis)) return;
       lookPointer = event.pointerId;
       previousX = event.clientX;
@@ -528,6 +629,7 @@ async function bootstrap(): Promise<void> {
     const release = (event: PointerEvent) => { if (event.pointerId === lookPointer) lookPointer = null; };
     canvas.addEventListener('pointerup', release);
     canvas.addEventListener('pointercancel', release);
+    canvas.addEventListener('lostpointercapture', release);
   }
 
   function updateFreeCamera(delta: number): void {
@@ -567,11 +669,13 @@ async function bootstrap(): Promise<void> {
   function setActiveMode(mode: MovementMode): void {
     tour = false; stationRunning = false;
     character.setMode(mode, xrEnvironment.cursor.valid ? xrEnvironment.cursor.position : null);
+    if (playerDependentBehavior()) followCamera.checked = false;
     behaviorSelect.value = mode;
     updateBehaviorDescription();
   }
 
   function updateRuntimeStats(delta: number): void {
+    element('character-position').textContent = character.loaded ? `X ${character.position.x.toFixed(2)} · Y ${character.position.y.toFixed(2)} · Z ${character.position.z.toFixed(2)} m${gizmo.dragging ? ' · 拖动中' : ''}` : '尚未载入角色';
     planeCount.textContent = String(xrEnvironment.planeCount);
     depthCount.textContent = String(xrEnvironment.depthTriangleCount);
     motionState.textContent = character.motionState === 'walk' ? (LOCOMOTION_STYLES.find(s => s.id === character.locomotionStyle)?.label ?? 'walk') : character.motionState;
