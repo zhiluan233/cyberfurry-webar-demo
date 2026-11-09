@@ -9,7 +9,7 @@ import {
 } from '@pixiv/three-vrm-animation';
 import { Navigator, type NavigationMode } from './navigation';
 import { BehaviorPlanner } from './behaviors';
-import { ProceduralLocomotion, LOCOMOTION_STYLES, type LocomotionStyle } from './locomotion';
+import { ProceduralLocomotion, LOCOMOTION_STYLES, type FootSurface, type FootSupport, type LocomotionStyle } from './locomotion';
 import { setLegacyShadeCompatibility } from './material-compat';
 import type { CollisionWorld, DemoConfig, MotionState, MovementMode } from './app-types';
 import { ArmSpread } from './arm-spread';
@@ -28,7 +28,8 @@ export class CharacterController {
   mode: MovementMode = 'manual';
   readonly navigator = new Navigator();
   private readonly behavior = new BehaviorPlanner();
-  locomotionStyle: LocomotionStyle = 'walk';
+  locomotionStyle: LocomotionStyle = 'default';
+  proceduralBounceEnabled = false;
   activity = '待命';
   manipulating = false;
   shadeCompatibility = true;
@@ -136,8 +137,7 @@ export class CharacterController {
       this.mixer = new THREE.AnimationMixer(nextVrm.scene);
       this.actions = {};
       this.currentAction = null;
-      this.initializePose(name => nextVrm.humanoid.getNormalizedBoneNode(name));
-      this.procedural?.configureGrounding(contacts.feet, () => this.position.y, point => this.findGroundHeight(this.worldMeshes, point));
+      this.initializePose(name => nextVrm.humanoid.getNormalizedBoneNode(name), contacts.feet);
       this.procedural?.configureCrawlContacts(contacts.crawl);
       await this.loadAnimations(nextVrm);
       this.loaded = true;
@@ -222,8 +222,9 @@ export class CharacterController {
     this.repairedMaterialCount = 0;
   }
 
-  private initializePose(getBone: GetBone): void {
+  private initializePose(getBone: GetBone, feet: FootSupport[] = []): void {
     this.procedural = new ProceduralLocomotion(getBone);
+    this.procedural.configureGrounding(feet, () => this.position.y, point => this.findFootSurface(point));
     this.armSpread = new ArmSpread(getBone, this.procedural.basis);
     this.armSpread.set(this.armSpreadDegrees);
   }
@@ -373,12 +374,16 @@ export class CharacterController {
     if (this.manipulating && this.mode === 'manual' && !this.route) this.movementIntent = this.joystick.length() > 0.08;
     const moving = speed > 0 && this.movementIntent;
     this.armSpread?.restore();
+    this.procedural?.restoreFootIK();
     this.setMotionState(!this.grounded && !this.manipulating ? 'jump' : moving ? 'walk' : 'idle');
     // Treat the configured default 1.1 m/s gait as 1x clip playback, including when travel is blocked.
     this.currentAction?.setEffectiveTimeScale(this.motionState === 'walk' ? speed / 1.1 : 1);
     this.mixer?.update(delta);
-    if (!this.previewAction && (!this.currentAction || this.locomotionStyle !== 'walk')) {
-      this.procedural?.update(delta, this.locomotionStyle, moving, this.grounded || this.manipulating, moving ? speed : 0);
+    const supported = this.grounded || this.manipulating;
+    if (!this.previewAction && !this.currentAction) {
+      this.procedural?.update(delta, this.locomotionStyle, moving, supported, moving ? speed : 0, this.proceduralBounceEnabled);
+    } else if (supported) {
+      this.procedural?.applyFootIK();
     }
     this.armSpread?.apply();
     this.vrm?.update(delta);
@@ -454,20 +459,31 @@ export class CharacterController {
     }
   }
 
-  private findGroundHeight(meshes: THREE.Mesh[], contact: THREE.Vector3 = this.position): number | null {
-    if (!meshes.length) return null;
+  private findGroundHeight(meshes: THREE.Mesh[]): number | null {
     const origin = this.position.clone();
-    origin.x = contact.x;
-    origin.z = contact.z;
     origin.y += this.capsuleHeight + 0.5;
+    const limit = this.position.y + this.config.character.maxStepHeightMeters + 0.05;
+    return this.findWalkableSurface(meshes, origin, this.capsuleHeight + 3, limit)?.height ?? null;
+  }
+
+  private findFootSurface(point: THREE.Vector3): FootSurface | null {
+    const reach = this.config.character.maxStepHeightMeters + 0.05;
+    const origin = point.clone();
+    origin.y = Math.min(point.y + reach, this.position.y + reach);
+    const bottom = Math.max(point.y - reach, this.position.y - reach);
+    return this.findWalkableSurface(this.worldMeshes, origin, origin.y - bottom, origin.y);
+  }
+
+  private findWalkableSurface(meshes: THREE.Mesh[], origin: THREE.Vector3, distance: number, limit: number): FootSurface | null {
+    if (!meshes.length || distance <= 0) return null;
     this.raycaster.set(origin, new THREE.Vector3(0, -1, 0));
     this.raycaster.near = 0;
-    this.raycaster.far = this.capsuleHeight + 3;
+    this.raycaster.far = distance;
     for (const hit of this.raycaster.intersectObjects(meshes, false)) {
       if (!hit.face) continue;
       const normalMatrix = new THREE.Matrix3().getNormalMatrix(hit.object.matrixWorld);
       const normal = hit.face.normal.clone().applyMatrix3(normalMatrix).normalize();
-      if (normal.y > 0.35 && hit.point.y <= this.position.y + this.config.character.maxStepHeightMeters + 0.05) return hit.point.y;
+      if (normal.y > 0.35 && hit.point.y <= limit) return { height: hit.point.y, normal };
     }
     return null;
   }
@@ -508,7 +524,7 @@ export class CharacterController {
     this.motionState = next;
     if (this.previewAction) return;
     this.armSpread?.restore();
-    const nextAction = this.locomotionStyle === 'walk' ? this.actions[next] ?? null : null;
+    const nextAction = this.locomotionStyle === 'default' ? this.actions[next] ?? null : null;
     if (nextAction && nextAction !== previous) {
       if (!previous) this.procedural?.reset();
       nextAction.reset().fadeIn(this.config.animations[next].fadeSeconds).play();

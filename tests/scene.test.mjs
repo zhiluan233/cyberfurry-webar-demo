@@ -24,7 +24,9 @@ function tick(character, camera, frames, collisionWorld = world) {
 }
 
 test('the shared demonstration map includes every gait and every behavior', () => {
-  for (const style of LOCOMOTION_STYLES) assert.ok(nature.stations.some(station => station.style === style.id), `missing gait ${style.id}`);
+  for (const { id } of LOCOMOTION_STYLES.filter(style => style.id !== 'default')) {
+    assert.ok(nature.stations.some(station => station.style === id), `missing gait ${id}`);
+  }
   for (const behavior of BEHAVIORS) assert.ok(nature.stations.some(station => station.behavior === behavior.id), `missing behavior ${behavior.id}`);
   assert.equal(new Set(nature.stations.map(station => station.id)).size, nature.stations.length, 'station IDs must be unique');
 });

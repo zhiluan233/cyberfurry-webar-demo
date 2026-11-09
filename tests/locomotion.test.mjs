@@ -201,6 +201,87 @@ test('zero speed suppresses the gait even if a movement command remains active',
   }
 });
 
+test('running and sprinting keep a steady pelvis by default with sampled foot contacts', () => {
+  for (const [style, speed] of [['run', 2.475], ['sprint', 3.525]]) {
+    for (const runBounceEnabled of [undefined, true]) {
+      const rig = setup();
+      const feet = ['left', 'right'].map(side => {
+        const foot = rig.getBone(`${side}Foot`);
+        const sole = foot.getWorldPosition(new THREE.Vector3());
+        sole.y = 0;
+        const local = foot.worldToLocal(sole);
+        return { side, foot, local, forefootLocal: local.clone().add(new THREE.Vector3(0, 0, 0.12)) };
+      });
+      const normal = new THREE.Vector3(0, 1, 0);
+      rig.animation.configureGrounding(feet, () => rig.scene.position.y, () => ({ height: rig.scene.position.y, normal }));
+      rig.scene.position.y = 0.4;
+      const heights = [];
+      let contactFrames = 0;
+      for (let frame = 0; frame < 240; frame++) {
+        rig.animation.update(1 / 60, style, true, true, speed, runBounceEnabled);
+        if (frame < 60) continue;
+        heights.push(rig.getBone('hips').getWorldPosition(new THREE.Vector3()).y);
+        const lowest = Math.min(...feet.flatMap(({ foot, local, forefootLocal }) =>
+          [local, forefootLocal].map(point => foot.localToWorld(point.clone()).y)));
+        if (Math.abs(lowest - rig.scene.position.y) < 0.005) contactFrames++;
+      }
+      const range = Math.max(...heights) - Math.min(...heights);
+      if (runBounceEnabled) assert.ok(range > 0.025, `${style}: bounce returns when enabled`);
+      else {
+        assert.ok(range < 0.001, `${style}: steady pelvis varies by ${range} m`);
+        assert.ok(contactFrames > 60, `${style}: feet still make ground contact`);
+      }
+    }
+  }
+});
+
+test('every procedural gait keeps pelvis height steady by default with terrain IK active', () => {
+  const normal = new THREE.Vector3(0, 1, 0);
+  for (const { id, speedMultiplier } of LOCOMOTION_STYLES) {
+    const rig = setup();
+    rig.animation.configureGrounding([], () => 0, () => ({ height: 0, normal }));
+    rig.animation.configureCrawlContacts(['left', 'right'].map(side => ({
+      side, kind: 'knee', local: new THREE.Vector3(0, 0, 0.05),
+    })));
+    const heights = [];
+    for (let frame = 0; frame < 300; frame++) {
+      rig.animation.update(1 / 60, id, true, true, 1.5 * speedMultiplier);
+      if (frame >= 60) heights.push(rig.getBone('hips').getWorldPosition(new THREE.Vector3()).y);
+    }
+    const range = Math.max(...heights) - Math.min(...heights);
+    assert.ok(range < 0.001, `${id}: pelvis moves ${range} m`);
+  }
+});
+
+test('foot IK plants a low foot on a slope without moving a lifted foot or the authored pelvis', () => {
+  const rig = setup();
+  const right = rig.getBone('rightFoot');
+  const sole = right.getWorldPosition(new THREE.Vector3());
+  sole.y = 0;
+  const local = right.worldToLocal(sole);
+  const front = local.clone().add(new THREE.Vector3(0, 0, 0.10));
+  const normal = new THREE.Vector3(0, 1, -0.3).normalize();
+  const height = point => 0.04 + point.z * 0.3;
+  rig.animation.configureGrounding([{ side: 'right', local, forefootLocal: front }], () => 0,
+    point => ({ height: height(point), normal }));
+  rig.getBone('leftLowerLeg').rotation.x = 1.5;
+  const left = rig.getBone('leftFoot');
+  const lifted = left.getWorldPosition(new THREE.Vector3());
+  const hips = rig.getBone('hips').position.clone();
+  for (let frame = 0; frame < 20; frame++) {
+    rig.animation.applyFootIK();
+    assert.ok(left.getWorldPosition(new THREE.Vector3()).distanceTo(lifted) < 1e-6);
+    assert.ok(rig.getBone('hips').position.equals(hips));
+    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(right.getWorldQuaternion(new THREE.Quaternion()));
+    assert.ok(up.distanceTo(normal) < 1e-6);
+    for (const point of [local, front]) {
+      const contact = right.localToWorld(point.clone());
+      assert.ok(Math.abs(contact.y - height(contact)) < 1e-5);
+    }
+    rig.animation.restoreFootIK();
+  }
+});
+
 test('stairs gaits retain one supported foot on level platforms instead of floating or sinking', () => {
   for (const fps of [30, 60, 120]) {
     for (const [style, speed] of [['stairs-up', 0.96], ['stairs-down', 0.87]]) {
@@ -237,7 +318,8 @@ test('stairs use different contact heights when the two feet straddle a riser', 
       const local = foot.worldToLocal(sole);
       return { side, foot, local, forefootLocal: local.clone() };
     });
-    rig.animation.configureGrounding(feet, () => 0, surface);
+    const normal = new THREE.Vector3(0, 1, 0);
+    rig.animation.configureGrounding(feet, () => 0, point => ({ height: surface(point), normal }));
     let contactsOnTwoLevels = 0;
     for (let frame = 0; frame < 360; frame++) {
       rig.animation.update(1 / 60, style, true, true, 0.7);

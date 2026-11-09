@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { VRMHumanBoneName } from '@pixiv/three-vrm';
 
 export type LocomotionStyle =
-  | 'walk' | 'run' | 'sprint' | 'sneak' | 'crouch' | 'crawl' | 'ladder'
+  | 'default' | 'walk' | 'run' | 'sprint' | 'sneak' | 'crouch' | 'crawl' | 'ladder'
   | 'stairs-up' | 'stairs-down' | 'backward' | 'strafe-left' | 'strafe-right'
   | 'hop' | 'swim' | 'balance' | 'march' | 'tiptoe' | 'wade' | 'skate' | 'limping' | 'dance';
 
@@ -15,6 +15,7 @@ export interface LocomotionDefinition {
 }
 
 export const LOCOMOTION_STYLES: readonly LocomotionDefinition[] = [
+  { id: 'default', label: '默认', description: '播放配置的 VRMA 待机、行走与跳跃动作。', speedMultiplier: 1, capsuleScale: 1 },
   { id: 'walk', label: '自然步行', description: '脚跟落地、脚尖蹬离，骨盆侧摆与反向摆臂。', speedMultiplier: 1, capsuleScale: 1 },
   { id: 'run', label: '跑步', description: '前倾、屈肘摆臂、后腿回收与短暂腾空。', speedMultiplier: 1.65, capsuleScale: 1 },
   { id: 'sprint', label: '冲刺', description: '更大步幅、抬膝、深屈肘与有力蹬地。', speedMultiplier: 2.35, capsuleScale: 1 },
@@ -52,6 +53,10 @@ export interface FootSupport {
   local: THREE.Vector3;
   forefootLocal: THREE.Vector3;
   heelLocal?: THREE.Vector3;
+}
+export interface FootSurface {
+  height: number;
+  normal: THREE.Vector3;
 }
 export interface CrawlContact {
   side: LegSide;
@@ -105,23 +110,50 @@ export class ProceduralLocomotion {
   private readonly legHeight: number;
   private supports: FootSupport[] = [];
   private supportFloor: (() => number) | null = null;
-  private stairSurface: ((point: THREE.Vector3) => number | null) | null = null;
+  private footSurface: ((point: THREE.Vector3) => FootSurface | null) | null = null;
+  private readonly beforeFootIK = new Map<THREE.Object3D, THREE.Quaternion>();
   private readonly handFrames = new Map<LegSide, THREE.Matrix4>();
   private crawlContacts: CrawlContact[] = [];
-  private stairTargets: { side: LegSide; clearance: number }[] = [];
+  private crawlDrop = 0.45;
+  private footTargets: { side: LegSide; clearance: number }[] = [];
 
   configureGrounding(
     supports: FootSupport[],
     floor: () => number,
-    stairSurface: (point: THREE.Vector3) => number | null,
+    footSurface: (point: THREE.Vector3) => FootSurface | null,
   ): void {
-    this.supports = supports;
+    this.supports = [...supports];
+    const floorY = floor();
+    for (const side of ['left', 'right'] as const) {
+      if (this.supports.some(support => support.side === side)) continue;
+      const foot = this.bones.get(`${side}Foot`)?.node;
+      if (!foot) continue;
+      const sole = foot.getWorldPosition(new THREE.Vector3());
+      const forefoot = this.bones.get(`${side}Toes`)?.node.getWorldPosition(new THREE.Vector3()) ?? sole.clone();
+      sole.y = forefoot.y = floorY;
+      this.supports.push({ side, local: foot.worldToLocal(sole), forefootLocal: foot.worldToLocal(forefoot) });
+    }
     this.supportFloor = floor;
-    this.stairSurface = stairSurface;
+    this.footSurface = footSurface;
   }
 
   configureCrawlContacts(contacts: CrawlContact[]): void {
     this.crawlContacts = contacts;
+    const hips = this.bones.get('hips')?.node;
+    this.crawlDrop = 0.45;
+    if (!hips?.parent || !this.supportFloor) return;
+    const floor = this.supportFloor();
+    const scale = Math.abs(hips.parent.getWorldScale(new THREE.Vector3()).y);
+    let kneeHeight = Infinity;
+    for (const { side, kind, local } of contacts) {
+      if (kind !== 'knee') continue;
+      const knee = this.bones.get(`${side}LowerLeg`)?.node;
+      if (!knee) continue;
+      const center = knee.getWorldPosition(new THREE.Vector3());
+      const radius = knee.localToWorld(local.clone()).distanceTo(center);
+      kneeHeight = Math.min(kneeHeight, center.y - floor - radius);
+    }
+    if (Number.isFinite(kneeHeight) && scale > 0.001) this.crawlDrop = Math.max(this.crawlDrop, kneeHeight / (this.legHeight * scale));
   }
 
   get basis(): THREE.Quaternion { return this.poseBasis.clone(); }
@@ -191,6 +223,7 @@ export class ProceduralLocomotion {
   }
 
   reset(): void {
+    this.beforeFootIK.clear();
     for (const bone of this.bones.values()) {
       bone.node.quaternion.copy(bone.rotation);
       bone.node.position.copy(bone.position);
@@ -199,11 +232,13 @@ export class ProceduralLocomotion {
     this.previousStyle = null;
     this.styleAge = 0;
     this.wasGrounded = true;
-    this.stairTargets = [];
+    this.footTargets = [];
   }
 
-  update(deltaSeconds: number, style: LocomotionStyle, moving: boolean, grounded: boolean, speed: number): void {
+  update(deltaSeconds: number, requestedStyle: LocomotionStyle, moving: boolean, grounded: boolean, speed: number, bounceEnabled = false): void {
     if (!Number.isFinite(deltaSeconds) || deltaSeconds <= 0) return;
+    this.restoreFootIK();
+    const style = requestedStyle === 'default' ? 'walk' : requestedStyle;
     const delta = Math.min(deltaSeconds, 0.05);
     this.styleAge = style === this.previousStyle && grounded ? this.styleAge + delta : 0;
     this.previousStyle = style;
@@ -223,20 +258,21 @@ export class ProceduralLocomotion {
     // intent alive while blocked; the controller separately owns real movement.
     if (active) this.phase = (this.phase + delta * TAU * speed / Math.max(0.05, cycleDistance)) % TAU;
     for (const bone of this.bones.values()) bone.pose.set(0, 0, 0);
-    this.stairTargets = [];
+    const bounce = Number(bounceEnabled);
+    this.footTargets = [];
     this.offset.set(0, 0, 0);
-    this.idlePose();
-    this.gaitPose(style);
-    if (grounded && GROUND_GAITS[style]) this.groundGaitPose(style, GROUND_GAITS[style]!);
+    this.idlePose(bounce);
+    this.gaitPose(style, bounce);
+    if (grounded && GROUND_GAITS[style]) this.groundGaitPose(style, GROUND_GAITS[style]!, bounceEnabled);
 
     if (!grounded && style !== 'swim' && style !== 'ladder') {
       this.airTime += delta;
-      this.jumpPose();
+      this.jumpPose(bounce);
     } else {
       if (!this.wasGrounded && this.airTime > 0.08) this.landing = clamp(this.airTime * 0.42, 0.08, 0.24);
       this.airTime = 0;
       if (this.landing > 0.001) {
-        this.offset.y -= this.landing;
+        this.offset.y -= this.landing * bounce;
         for (const side of ['left', 'right'] as const) {
           this.add(`${side}UpperLeg`, -this.landing * 1.6, 0, 0);
           this.add(`${side}LowerLeg`, this.landing * 3.1, 0, 0);
@@ -262,17 +298,14 @@ export class ProceduralLocomotion {
       }
     }
     if (style === 'crawl') {
-      if (grounded) this.solveCrawlContacts();
+      if (grounded) this.solveCrawlContacts(bounceEnabled);
       this.orientHands('crawl');
     }
     if (style === 'ladder') {
       this.solveLadderArms();
       this.orientHands('ladder');
     }
-    if (grounded) {
-      this.applyFootGrounding(style);
-      if (this.stairTargets.length) this.applyStairContacts();
-    }
+    if (grounded) this.applyFootIK(style);
   }
 
   private orientHands(style: 'crawl' | 'ladder'): void {
@@ -317,23 +350,41 @@ export class ProceduralLocomotion {
     }
   }
 
-  private solveCrawlContacts(): void {
+  private solveCrawlContacts(bounceEnabled: boolean): void {
     const hips = this.bones.get('hips')?.node;
     if (!hips?.parent || !this.supportFloor || !this.crawlContacts.length) return;
     const floor = this.supportFloor();
+    const basis = this.worldBasis();
+    const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(basis);
     let kneeY = Infinity;
+    let supportKnee: THREE.Object3D | null = null;
     for (const contact of this.crawlContacts) {
       if (contact.kind !== 'knee') continue;
       const knee = this.bones.get(`${contact.side}LowerLeg`)?.node;
-      if (knee) kneeY = Math.min(kneeY, knee.localToWorld(contact.local.clone()).y);
+      if (!knee) continue;
+      const height = knee.localToWorld(contact.local.clone()).y;
+      if (height < kneeY) { kneeY = height; supportKnee = knee; }
     }
-    if (Number.isFinite(kneeY)) {
-      const position = hips.getWorldPosition(new THREE.Vector3());
-      position.y += floor - kneeY;
-      hips.position.copy(hips.parent.worldToLocal(position));
+    if (supportKnee?.parent) {
+      if (bounceEnabled) {
+        const position = hips.getWorldPosition(new THREE.Vector3());
+        position.y += floor - kneeY;
+        hips.position.copy(hips.parent.worldToLocal(position));
+      } else {
+        // Move the supporting knee within its thigh's reach while keeping the pelvis steady.
+        const thigh = supportKnee.parent;
+        const origin = thigh.getWorldPosition(new THREE.Vector3());
+        const direction = supportKnee.getWorldPosition(new THREE.Vector3()).sub(origin);
+        const length = direction.length();
+        const vertical = clamp(direction.y + floor - kneeY, -length, length);
+        direction.y = 0;
+        if (direction.lengthSq() < 1e-8) direction.copy(forward);
+        direction.setLength(Math.sqrt(Math.max(0, length ** 2 - vertical ** 2))).y = vertical;
+        const orientation = supportKnee.getWorldQuaternion(new THREE.Quaternion());
+        this.aimBone(thigh, supportKnee, origin.add(direction));
+        supportKnee.quaternion.copy(thigh.getWorldQuaternion(new THREE.Quaternion()).invert().multiply(orientation));
+      }
     }
-    const basis = this.worldBasis();
-    const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(basis);
     const lateral = new THREE.Vector3(1, 0, 0).applyQuaternion(basis);
     const palmFrame = new THREE.Matrix4().makeRotationFromQuaternion(basis).multiply(
       new THREE.Matrix4().makeBasis(new THREE.Vector3(-1, 0, 0), new THREE.Vector3(0, -1, 0), new THREE.Vector3(0, 0, 1)),
@@ -379,78 +430,73 @@ export class ProceduralLocomotion {
     const cosine = clamp((upperLength ** 2 + distance ** 2 - lowerLength ** 2) / (2 * upperLength * distance), -1, 1);
     const bend = origin.clone().addScaledVector(direction, upperLength * cosine)
       .addScaledVector(pole, upperLength * Math.sqrt(1 - cosine ** 2));
-    const rotate = (bone: THREE.Object3D, child: THREE.Object3D, goal: THREE.Vector3) => {
-      const pivot = bone.getWorldPosition(new THREE.Vector3());
-      const current = child.getWorldPosition(new THREE.Vector3()).sub(pivot).normalize();
-      const desired = goal.clone().sub(pivot).normalize();
-      const rotation = new THREE.Quaternion().setFromUnitVectors(current, desired)
-        .multiply(bone.getWorldQuaternion(new THREE.Quaternion()));
-      if (bone.parent) rotation.premultiply(bone.parent.getWorldQuaternion(new THREE.Quaternion()).invert());
-      bone.quaternion.copy(rotation);
-    };
-    rotate(upper, lower, bend);
-    rotate(lower, end, origin.addScaledVector(direction, distance));
+    this.aimBone(upper, lower, bend);
+    this.aimBone(lower, end, origin.addScaledVector(direction, distance));
   }
 
-  private applyFootGrounding(style: LocomotionStyle): void {
-    const hips = this.bones.get('hips')?.node;
-    if (!hips?.parent || !this.supportFloor || !this.supports.length || ['swim', 'crawl', 'ladder', 'hop'].includes(style)) return;
-    const gait = GROUND_GAITS[style];
-    const cycle = this.phase / TAU;
-    // Only running and sprinting have a flight phase with no supporting foot.
-    if (gait && gait.stance < 0.5 && this.activity >= 0.08 && cycle % 0.5 >= gait.stance) return;
-    let lowest = Infinity;
-    for (const { side, local, forefootLocal } of this.supports) {
+  private aimBone(bone: THREE.Object3D, child: THREE.Object3D, goal: THREE.Vector3): void {
+    const pivot = bone.getWorldPosition(new THREE.Vector3());
+    const current = child.getWorldPosition(new THREE.Vector3()).sub(pivot).normalize();
+    const desired = goal.clone().sub(pivot).normalize();
+    const rotation = new THREE.Quaternion().setFromUnitVectors(current, desired)
+      .multiply(bone.getWorldQuaternion(new THREE.Quaternion()));
+    if (bone.parent) rotation.premultiply(bone.parent.getWorldQuaternion(new THREE.Quaternion()).invert());
+    bone.quaternion.copy(rotation);
+  }
+
+  restoreFootIK(): void {
+    for (const [bone, rotation] of this.beforeFootIK) bone.quaternion.copy(rotation);
+    this.beforeFootIK.clear();
+  }
+
+  applyFootIK(style?: LocomotionStyle): void {
+    const sampleSurface = this.footSurface;
+    if (!this.supportFloor || !sampleSurface || !this.supports.length) return;
+    const floor = this.supportFloor();
+    const scale = Math.abs(this.bones.get('hips')?.node.parent?.getWorldScale(new THREE.Vector3()).y ?? 1);
+    const up = new THREE.Vector3(0, 1, 0);
+    const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(this.worldBasis());
+    for (const { side, local, forefootLocal, heelLocal } of this.supports) {
+      const upper = this.bones.get(`${side}UpperLeg`)?.node;
+      const lower = this.bones.get(`${side}LowerLeg`)?.node;
       const foot = this.bones.get(`${side}Foot`)?.node;
-      const point = style === 'tiptoe' ? forefootLocal : local;
-      if (foot) lowest = Math.min(lowest, foot.localToWorld(point.clone()).y);
-    }
-    if (!Number.isFinite(lowest)) return;
-    const position = hips.getWorldPosition(new THREE.Vector3());
-    position.y += this.supportFloor() - lowest;
-    hips.position.copy(hips.parent.worldToLocal(position));
-  }
-
-  private applyStairContacts(): void {
-    const hips = this.bones.get('hips')?.node;
-    if (!hips?.parent || !this.stairSurface) return;
-    const scale = Math.abs(hips.parent.getWorldScale(new THREE.Vector3()).y);
-    const basis = this.worldBasis();
-    const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(basis);
-    const goals = [];
-    let pelvisOffset = 0;
-    for (const target of this.stairTargets) {
-      const support = this.supports.find(entry => entry.side === target.side);
-      const upper = this.bones.get(`${target.side}UpperLeg`)?.node;
-      const lower = this.bones.get(`${target.side}LowerLeg`)?.node;
-      const foot = this.bones.get(`${target.side}Foot`)?.node;
-      if (!support || !upper || !lower || !foot?.parent) continue;
-      const sole = foot.localToWorld(support.local.clone());
-      // A paw can bridge the edge even when its centre is still over the lower tread.
-      const contacts = [sole, foot.localToWorld(support.forefootLocal.clone())];
-      if (support.heelLocal) contacts.push(foot.localToWorld(support.heelLocal.clone()));
-      const levels = contacts.map(this.stairSurface).filter(height => height !== null);
-      if (!levels.length) continue;
-      const surface = Math.max(...levels);
+      if (!upper || !lower || !foot?.parent) continue;
+      const points = style === 'tiptoe' ? [forefootLocal] : [local, forefootLocal];
+      if (style !== 'tiptoe' && heelLocal) points.push(heelLocal);
+      const contacts = points.flatMap(point => {
+        const world = foot.localToWorld(point.clone());
+        const surface = sampleSurface(world);
+        return surface ? [{ world, surface }] : [];
+      });
+      if (!contacts.length) continue;
+      const support = contacts.reduce((a, b) => a.surface.height - a.world.y >= b.surface.height - b.world.y ? a : b);
+      const clearance = style ? this.footTargets.find(target => target.side === side)?.clearance : undefined;
+      const gap = support.world.y - support.surface.height;
+      // Authored clips and gaits without foot trajectories can still plant a low foot.
+      // Higher feet keep their swing, while a surface can always push a foot out of penetration.
+      const lifted = clearance === undefined ? Math.max(0, support.world.y - floor, gap) : clearance * scale;
+      const plant = 1 - THREE.MathUtils.smoothstep(lifted, 0.025, 0.12);
       const ankle = foot.getWorldPosition(new THREE.Vector3());
-      const knee = lower.getWorldPosition(new THREE.Vector3());
+      const tilt = new THREE.Quaternion().slerp(new THREE.Quaternion().setFromUnitVectors(up, support.surface.normal), plant);
+      const heightCorrection = Math.max(...contacts.map(({ world, surface }) => {
+        const relative = world.clone().sub(ankle);
+        const tiltDelta = relative.clone().applyQuaternion(tilt).sub(relative);
+        return surface.height - world.y - surface.normal.dot(tiltDelta) / surface.normal.y;
+      }));
+      const shift = clearance === undefined
+        ? Math.max(heightCorrection, heightCorrection * plant)
+        : heightCorrection + lifted;
+      if (Math.abs(shift) < 0.0005 && tilt.w > 0.999999) continue;
+      const orientation = foot.getWorldQuaternion(new THREE.Quaternion()).premultiply(tilt);
       const hip = upper.getWorldPosition(new THREE.Vector3());
-      const reach = hip.distanceTo(knee) + knee.distanceTo(ankle) - 0.004;
-      ankle.y += surface + target.clearance * scale - sole.y;
-      const horizontal = Math.hypot(hip.x - ankle.x, hip.z - ankle.z);
-      if (horizontal < reach) {
-        pelvisOffset = Math.min(pelvisOffset, ankle.y + Math.sqrt(reach ** 2 - horizontal ** 2) - hip.y);
-      }
-      goals.push({ upper, lower, foot, ankle, orientation: foot.getWorldQuaternion(new THREE.Quaternion()) });
-    }
-    if (pelvisOffset < 0) {
-      const position = hips.getWorldPosition(new THREE.Vector3());
-      position.y += Math.max(pelvisOffset, -0.12);
-      hips.position.copy(hips.parent.worldToLocal(position));
-    }
-    for (const { upper, lower, foot, ankle, orientation } of goals) {
-      this.solveLimb(upper, lower, foot, ankle, forward.clone());
-      foot.quaternion.copy(foot.parent!.getWorldQuaternion(new THREE.Quaternion()).invert().multiply(orientation));
+      const legAxis = ankle.clone().sub(hip).normalize();
+      const kneeDirection = lower.getWorldPosition(new THREE.Vector3()).sub(hip);
+      const pole = kneeDirection.addScaledVector(legAxis, -kneeDirection.dot(legAxis));
+      if (pole.lengthSq() < 1e-5) pole.copy(forward);
+      for (const bone of [upper, lower, foot]) this.beforeFootIK.set(bone, bone.quaternion.clone());
+      ankle.y += shift;
+      this.solveLimb(upper, lower, foot, ankle, pole);
+      foot.quaternion.copy(foot.parent.getWorldQuaternion(new THREE.Quaternion()).invert().multiply(orientation));
     }
   }
 
@@ -460,12 +506,12 @@ export class ProceduralLocomotion {
     if (pose) { pose.x += x; pose.y += y; pose.z += z; }
   }
 
-  private idlePose(): void {
+  private idlePose(bounce: number): void {
     const breath = Math.sin(this.time * 1.9);
     this.set('spine', 0.018 + breath * 0.008);
     this.set('chest', -0.012 + breath * 0.012);
     this.set('head', -0.01, Math.sin(this.time * 0.5) * 0.035 * (1 - this.activity));
-    this.offset.y = breath * 0.003;
+    this.offset.y = breath * 0.003 * bounce;
     for (const side of ['left', 'right'] as const) {
       const sign = side === 'left' ? 1 : -1;
       this.set(`${side}UpperArm`, -0.035, 0, -sign * 1.43);
@@ -477,19 +523,19 @@ export class ProceduralLocomotion {
     }
   }
 
-  /** A flat-ground, sagittal two-link solve; terrain height still belongs to
-   * the character controller. Stance feet travel backwards at requested speed,
-   * while only the returning foot lifts. The stair pose is then fitted to the actual collision surfaces. */
-  private groundGaitPose(style: LocomotionStyle, gait: GroundGait): void {
+  /** Generate foot trajectories on level ground before the terrain IK pass.
+   * Stance feet travel backwards at the requested speed, while the returning foot lifts. */
+  private groundGaitPose(style: LocomotionStyle, gait: GroundGait, bounceEnabled: boolean): void {
     if (!this.legs.size) return;
     const dimensions = this.legs.get('left') ?? this.legs.get('right')!;
     const length = dimensions.thigh + dimensions.shin;
     const a = this.activity;
     const low = style === 'crouch' || style === 'sneak';
-    const stairs = style === 'stairs-up' || style === 'stairs-down';
     const running = style === 'run' || style === 'sprint';
     const reverse = style === 'backward' ? -1 : 1;
     const span = gait.stride * length * gait.stance * a;
+    const knee = 0.07 + (gait.knee - 0.07) * (low ? 1 : a);
+    const reach = Math.sqrt(dimensions.thigh ** 2 + dimensions.shin ** 2 + 2 * dimensions.thigh * dimensions.shin * Math.cos(knee));
     const targets: { side: LegSide; z: number; lift: number; roll: number; toe: number }[] = [];
     let bodyHeight = Infinity;
     for (const side of ['left', 'right'] as const) {
@@ -514,30 +560,31 @@ export class ProceduralLocomotion {
         lift = Math.pow(Math.sin(Math.PI * swing), 1.5) * gait.clearance * length * a;
         roll = gait.roll * Math.cos(Math.PI * swing) * a;
       }
-      if (stairs) this.stairTargets.push({ side, clearance: lift });
+      this.footTargets.push({ side, clearance: lift });
       if (style === 'tiptoe') { roll += 0.68; toe -= 0.68; }
       // Leave room for toe/heel rotation without pushing the sole through the
       // rest support plane. The ankle itself is not the bottom of the foot.
       lift += Math.max(0, roll) * length * 0.15 + Math.max(0, -roll) * length * 0.06;
-      const knee = 0.07 + (gait.knee - 0.07) * (low ? 1 : a);
-      const reach = Math.sqrt(dimensions.thigh ** 2 + dimensions.shin ** 2 + 2 * dimensions.thigh * dimensions.shin * Math.cos(knee));
       bodyHeight = Math.min(bodyHeight, Math.sqrt(Math.max(0.01, reach * reach - z * z)) + lift);
       targets.push({ side, z: z * reverse, lift, roll: roll * reverse, toe });
     }
-    if(low){
-      // A low, quiet gait must not bob to the free foot's lift trajectory.
-      const reach=Math.sqrt(dimensions.thigh**2+dimensions.shin**2+2*dimensions.thigh*dimensions.shin*Math.cos(gait.knee));
-      bodyHeight=Math.sqrt(Math.max(0.01,reach*reach-(span*0.5)**2));
+    if (low || !bounceEnabled) {
+      // Fit the widest stance at a fixed height and let the knees absorb the stride.
+      bodyHeight = Math.sqrt(Math.max(0.01, reach ** 2 - (span / 2) ** 2));
     }
     if (running) {
-      const halfCycle = (this.phase / TAU) % 0.5;
       const contactHeight = Math.sqrt(Math.max(0.01, (length * 0.97) ** 2 - (span / 2) ** 2));
-      const compressedHeight = length * Math.cos(gait.knee / 2);
-      const supportHeight = halfCycle < gait.stance
-        ? contactHeight + (compressedHeight - contactHeight) * Math.sin(Math.PI * halfCycle / gait.stance) ** 2
-        : contactHeight + length * 0.09 * Math.sin(Math.PI * (halfCycle - gait.stance) / (0.5 - gait.stance)) ** 2;
-      // The flight phase can rise; a supporting foot still limits extension.
-      bodyHeight = Math.min(bodyHeight + length * 0.08 * a, supportHeight);
+      if (!bounceEnabled) {
+        bodyHeight = contactHeight;
+      } else {
+        const halfCycle = (this.phase / TAU) % 0.5;
+        const compressedHeight = length * Math.cos(gait.knee / 2);
+        const supportHeight = halfCycle < gait.stance
+          ? contactHeight + (compressedHeight - contactHeight) * Math.sin(Math.PI * halfCycle / gait.stance) ** 2
+          : contactHeight + length * 0.09 * Math.sin(Math.PI * (halfCycle - gait.stance) / (0.5 - gait.stance)) ** 2;
+        // The flight phase can rise; a supporting foot still limits extension.
+        bodyHeight = Math.min(bodyHeight + length * 0.08 * a, supportHeight);
+      }
       bodyHeight = THREE.MathUtils.lerp(dimensions.height, bodyHeight, a);
     }
     this.offset.y = (bodyHeight - dimensions.height) / this.legHeight;
@@ -567,7 +614,7 @@ export class ProceduralLocomotion {
     }
   }
 
-  private gaitPose(style: LocomotionStyle): void {
+  private gaitPose(style: LocomotionStyle, bounce: number): void {
     const a = this.activity;
     const p = this.phase;
     const running = style === 'run' || style === 'sprint';
@@ -577,7 +624,7 @@ export class ProceduralLocomotion {
     const bend = style === 'crouch' ? 0.68 : style === 'sneak' ? 0.35 : style === 'skate' ? 0.4 : 0.035;
     const direction = style === 'backward' ? -0.7 : 1;
     this.offset.x += Math.sin(p) * (running ? 0.028 : 0.018) * a;
-    this.offset.y += (running ? 0.025 + Math.abs(Math.cos(p)) * 0.045 : -Math.abs(Math.sin(p)) * 0.035) * a;
+    this.offset.y += (running ? 0.025 + Math.abs(Math.cos(p)) * 0.045 : -Math.abs(Math.sin(p)) * 0.035) * a * bounce;
     this.offset.y -= style === 'crouch' ? 0.26 : style === 'sneak' ? 0.11 : style === 'skate' ? 0.1 : 0;
     this.set('hips', running ? 0.07 * a : 0, Math.sin(p) * 0.075 * a, -Math.sin(p) * 0.035 * a);
     this.add('spine', (style==='sprint'?0.32:running?0.14:style==='sneak'?0.48:style==='crouch'?0.3:0.035) * (low ? 1 : a), -Math.sin(p) * 0.11 * a);
@@ -628,19 +675,19 @@ export class ProceduralLocomotion {
     if (style === 'tiptoe') this.offset.y += 0.055;
     if (style === 'balance') { this.set('hips', 0, 0, Math.sin(p * 0.5) * 0.045); this.set('head', 0.12); }
     if (style === 'backward') { this.set('spine',0.06,0.28);this.set('chest',0.04,0.42);this.set('neck',0,0.72);this.set('head',0,1.02); }
-    if (style === 'strafe-left' || style === 'strafe-right') this.strafePose(style === 'strafe-left' ? 1 : -1);
-    if (style === 'crawl') this.crawlPose();
-    if (style === 'ladder') this.ladderPose();
-    if (style === 'swim') this.swimPose();
-    if (style === 'hop') this.hopPose();
+    if (style === 'strafe-left' || style === 'strafe-right') this.strafePose(style === 'strafe-left' ? 1 : -1, bounce);
+    if (style === 'crawl') this.crawlPose(bounce);
+    if (style === 'ladder') this.ladderPose(bounce);
+    if (style === 'swim') this.swimPose(bounce);
+    if (style === 'hop') this.hopPose(bounce);
     if (style === 'skate') this.skatePose();
-    if (style === 'limping') this.limpPose();
-    if (style === 'dance') this.dancePose();
+    if (style === 'limping') this.limpPose(bounce);
+    if (style === 'dance') this.dancePose(bounce);
   }
 
-  private strafePose(direction: number): void {
+  private strafePose(direction: number, bounce: number): void {
     const a=this.activity,cycle=this.phase/TAU;
-    this.offset.set(Math.sin(this.phase)*0.035*a,-0.07-Math.abs(Math.sin(this.phase))*0.015*a,0);
+    this.offset.set(Math.sin(this.phase)*0.035*a,-0.07-Math.abs(Math.sin(this.phase))*0.015*a*bounce,0);
     this.set('hips',0,0,-direction*0.025*a);this.set('spine',0.08,0,direction*0.025*a);
     for(const side of ['left','right'] as const){
       const sign=side==='left'?1:-1,lead=sign===direction;
@@ -657,9 +704,10 @@ export class ProceduralLocomotion {
     }
   }
 
-  private crawlPose(): void {
+  private crawlPose(bounce: number): void {
     const a=this.activity,p=this.phase,body=1.43;
-    this.offset.set(Math.sin(p)*0.035*a,-0.45+Math.cos(p*2)*0.02*a,0);
+    const drop = bounce ? 0.45 : this.crawlDrop;
+    this.offset.set(Math.sin(p)*0.035*a,-drop+Math.cos(p*2)*0.02*a*bounce,0);
     this.set('hips',body,Math.sin(p)*0.04*a);this.set('spine',0.1,-Math.sin(p)*0.05*a);
     this.set('chest',0.02);this.set('neck',-0.34);this.set('head',-0.99);
     for(const side of ['left','right'] as const){
@@ -675,9 +723,9 @@ export class ProceduralLocomotion {
     }
   }
 
-  private ladderPose(): void {
+  private ladderPose(bounce: number): void {
     const a=this.activity,p=this.phase;
-    this.offset.set(Math.sin(p)*0.03*a,-0.1+Math.sin(p*2)*0.04*a,0.025);
+    this.offset.set(Math.sin(p)*0.03*a,-0.1+Math.sin(p*2)*0.04*a*bounce,0.025);
     this.set('hips',0.06,Math.sin(p)*0.035*a);this.set('spine',0.08);this.set('chest',-0.04);this.set('head',-0.26);
     for(const side of ['left','right'] as const){
       const sign=side==='left'?1:-1,wave=Math.sin(p+(side==='right'?Math.PI:0));
@@ -691,9 +739,9 @@ export class ProceduralLocomotion {
     }
   }
 
-  private swimPose(): void {
+  private swimPose(bounce: number): void {
     const a = this.activity;
-    this.offset.set(0, -0.66 + Math.sin(this.time * 1.7) * 0.018, 0);
+    this.offset.set(0, -0.66 + Math.sin(this.time * 1.7) * 0.018 * bounce, 0);
     this.set('hips', 1.48, 0, Math.sin(this.phase) * 0.12 * a);
     this.set('spine', 0.08, 0, Math.sin(this.phase) * 0.08 * a);
     this.set('chest', -0.03);
@@ -712,16 +760,17 @@ export class ProceduralLocomotion {
     }
   }
 
-  private hopPose(): void {
+  private hopPose(bounce: number): void {
     const a = this.activity;
     const wave = Math.sin(this.phase);
     const compression = Math.max(0, -wave) * a;
     const flight = Math.max(0, wave) * a;
-    this.offset.y = flight * 0.19 - compression * 0.17;
+    this.offset.y = (flight * 0.19 - compression * 0.17) * bounce;
     this.set('hips', 0);
     this.set('spine', compression * 0.18);
     for (const side of ['left', 'right'] as const) {
       const sign = side === 'left' ? 1 : -1;
+      this.footTargets.push({ side, clearance: flight * 0.19 * this.legHeight });
       this.set(`${side}UpperLeg`, -0.1 - compression * 0.62 - flight * 0.12);
       this.set(`${side}LowerLeg`, 0.2 + compression * 1.2 + flight * 0.25);
       this.set(`${side}Foot`, -0.1 - compression * 0.58 + flight * 0.3);
@@ -748,10 +797,10 @@ export class ProceduralLocomotion {
     }
   }
 
-  private limpPose(): void {
+  private limpPose(bounce: number): void {
     const a = this.activity;
     const weight = Math.max(0, Math.sin(this.phase));
-    this.offset.y -= weight * 0.07 * a;
+    this.offset.y -= weight * 0.07 * a * bounce;
     this.offset.x = -0.04 * a;
     this.set('hips', 0.03, 0, -0.09 * a);
     this.set('spine', 0.04, 0, 0.1 * a);
@@ -762,9 +811,9 @@ export class ProceduralLocomotion {
     this.set('rightLowerArm', 0, 0.6);
   }
 
-  private dancePose(): void {
+  private dancePose(bounce: number): void {
     const a=this.activity,p=this.phase,wave=Math.sin(p);
-    this.offset.x=wave*0.085*a;this.offset.y=-0.025-Math.abs(Math.cos(p))*0.045*a;
+    this.offset.x=wave*0.085*a;this.offset.y=-0.025-Math.abs(Math.cos(p))*0.045*a*bounce;
     this.set('hips',0.04,wave*0.25*a,wave*0.09*a);this.set('chest',0,-wave*0.34*a);this.set('head',0,wave*0.13*a);
     for(const side of ['left','right'] as const){
       const sign=side==='left'?1:-1,step=Math.max(0,wave*sign)*a;
@@ -776,9 +825,9 @@ export class ProceduralLocomotion {
     }
   }
 
-  private jumpPose(): void {
+  private jumpPose(bounce: number): void {
     const tuck = Math.sin(clamp(this.airTime / 0.65, 0, 1) * Math.PI);
-    this.offset.set(0, -0.04 * tuck, 0);
+    this.offset.set(0, -0.04 * tuck * bounce, 0);
     this.set('hips', 0.04);
     this.set('spine', 0.08);
     this.set('head', -0.09);

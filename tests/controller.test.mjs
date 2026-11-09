@@ -29,6 +29,28 @@ test('production controller starts empty and remains inert until a character is 
   character.update(1/60,new THREE.PerspectiveCamera(),null,{meshes:[]});
   assert.deepEqual(character.position.toArray(),[0,0,0]);
 });
+test('the default preset plays configured clips and natural walking uses the procedural gait', () => {
+  const s = setup();
+  const { character } = s;
+  const rig = character.root.getObjectByName('Articulated locomotion demonstrator');
+  const hips = rig.getObjectByName('hips');
+  const mixer = new THREE.AnimationMixer(rig);
+  character.mixer = mixer;
+  const height = hips.position.y + 0.1;
+  const positions = [hips.position.x, height, hips.position.z];
+  const clip = new THREE.AnimationClip('configured walk', 1, [new THREE.VectorKeyframeTrack('hips.position', [0], positions)]);
+  const action = mixer.clipAction(clip);
+  character.actions.walk = action;
+  assert.equal(character.locomotionStyle, 'default');
+  character.joystick.set(1, 0);
+  tick(s, 60);
+  assert.ok(action.isRunning());
+  assert.ok(Math.abs(hips.position.y - height) < 1e-6);
+  character.setLocomotion('walk');
+  tick(s, 60);
+  assert.equal(action.isRunning(), false);
+  assert.ok(hips.position.y < height - 0.08);
+});
 test('zero speed freezes every behavior and gait, including vertical ladder routes',()=>{
   const s=setup(); s.config.character.moveSpeedMetersPerSecond=0;
   for(const style of LOCOMOTION_STYLES) for(const behavior of BEHAVIORS) {

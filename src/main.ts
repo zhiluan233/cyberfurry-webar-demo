@@ -125,6 +125,7 @@ async function bootstrap(): Promise<void> {
   const gizmoEnabled = element<HTMLInputElement>('gizmo-enabled');
   const behaviorSelect = element<HTMLSelectElement>('behavior-mode');
   const styleSelect = element<HTMLSelectElement>('locomotion-style');
+  const proceduralBounce = element<HTMLInputElement>('procedural-bounce');
   const stationSelect = element<HTMLSelectElement>('demo-station');
   const navSelect = element<HTMLSelectElement>('navigation-mode');
   let tour = false;
@@ -220,6 +221,7 @@ async function bootstrap(): Promise<void> {
     styleSelect.addEventListener('change', () => {
       character.setLocomotion(styleSelect.value as LocomotionStyle); styleSelect.value = character.locomotionStyle; updateStyleDescription();
     });
+    proceduralBounce.addEventListener('change', () => { character.proceduralBounceEnabled = proceduralBounce.checked; });
     behaviorSelect.addEventListener('change', () => {
       if (behaviorSelect.value === 'go-to' && !xrEnvironment.cursor.valid) { behaviorSelect.value = character.mode; toast('请对准地面，或双击地面设置目标', true); return; }
       setActiveMode(behaviorSelect.value as MovementMode);
@@ -376,6 +378,7 @@ async function bootstrap(): Promise<void> {
     }
     firstPerson.disabled = !character.hasVRM;
     armSpread.disabled = !character.loaded;
+    proceduralBounce.disabled = !character.loaded;
     followCamera.disabled = previewCamera.firstPerson || !character.loaded;
   }
 
