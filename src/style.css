@@ -264,3 +264,4 @@ select:focus-visible, button:focus-visible, input:focus-visible { outline: 2px s
 
 .in-ar #preview-tools { display: none; }
 #preview-tools .preview-controls { margin-top: 10px; }
+.preview-range { width: 100%; margin: 0; accent-color: var(--mint-strong); }
