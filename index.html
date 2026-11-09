@@ -58,7 +58,16 @@
         <div class="preview-controls"><button id="start-station" type="button">演示此场景</button><button id="tour-stations" type="button">全部巡展</button></div>
         <div id="preview-tools">
         <div class="preview-controls"><button id="focus-character" type="button">聚焦角色</button><button id="pause-simulation" type="button">暂停演示</button></div>
-        <label class="check-row"><input id="follow-camera" type="checkbox" /> 跟拍角色</label>
+        <label class="check-row"><input id="follow-camera" type="checkbox" /> 环绕跟拍</label>
+        <label class="check-row"><input id="first-person" type="checkbox" /> 第一人称</label>
+        <div id="first-person-settings" hidden>
+          <label class="control-label" for="first-person-forward">前移 <output id="first-person-forward-value">0.12 m</output></label>
+          <input class="preview-range" id="first-person-forward" type="range" min="0.02" max="0.45" step="0.01" value="0.12" />
+          <label class="control-label" for="first-person-height">抬高 <output id="first-person-height-value">0.04 m</output></label>
+          <input class="preview-range" id="first-person-height" type="range" min="-0.10" max="0.20" step="0.01" value="0.04" />
+        </div>
+        <label class="control-label" for="arm-spread">双臂外展偏移 <output id="arm-spread-value">0°</output></label>
+        <input class="preview-range" id="arm-spread" type="range" min="0" max="40" step="1" value="0" />
         <label class="control-label" for="simulation-speed">演示播放速度</label>
         <select id="simulation-speed"><option value="1">正常速度</option><option value="0.5">半速 · 0.5×</option><option value="0.25">慢放 · 0.25×</option></select>
         <label class="check-row"><input id="gizmo-enabled" type="checkbox" /> Gizmo 移动角色</label>

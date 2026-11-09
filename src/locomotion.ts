@@ -18,24 +18,24 @@ export const LOCOMOTION_STYLES: readonly LocomotionDefinition[] = [
   { id: 'walk', label: '自然步行', description: '脚跟落地、脚尖蹬离，骨盆侧摆与反向摆臂。', speedMultiplier: 1, capsuleScale: 1 },
   { id: 'run', label: '跑步', description: '前倾、屈肘摆臂、后腿回收与短暂腾空。', speedMultiplier: 1.65, capsuleScale: 1 },
   { id: 'sprint', label: '冲刺', description: '更大步幅、抬膝、深屈肘与有力蹬地。', speedMultiplier: 2.35, capsuleScale: 1 },
-  { id: 'sneak', label: '潜行', description: '降低重心，轻柔落脚，手臂收拢保持警觉。', speedMultiplier: 0.55, capsuleScale: 0.83 },
+  { id: 'sneak', label: '潜行', description: '前倾低重心，大步轻落，支撑期间保持头身高度平稳。', speedMultiplier: 0.55, capsuleScale: 0.83 },
   { id: 'crouch', label: '蹲行', description: '持续屈髋屈膝，小步前行，踝关节补偿。', speedMultiplier: 0.42, capsuleScale: 0.68 },
   { id: 'crawl', label: '四肢爬行', description: '低姿态交叉支撑，手掌着地、肘膝交替回收。', speedMultiplier: 0.34, capsuleScale: 0.52 },
   { id: 'ladder', label: '攀爬梯子', description: '交替向上抓握，屈肘拉升、抬膝寻找踏棍。', speedMultiplier: 0.4, capsuleScale: 1 },
-  { id: 'stairs-up', label: '上楼梯', description: '抬腿越阶，前脚掌承重，伸膝抬升身体。', speedMultiplier: 0.64, capsuleScale: 1 },
-  { id: 'stairs-down', label: '下楼梯', description: '前脚探阶，支撑腿屈膝缓冲，手臂辅助平衡。', speedMultiplier: 0.58, capsuleScale: 1 },
-  { id: 'backward', label: '后退', description: '脚尖先探地，缩短步幅，肩颈侧转观察。', speedMultiplier: 0.62, capsuleScale: 1 },
+  { id: 'stairs-up', label: '上楼梯', description: '落脚逐级升高，抬膝越过台阶，根据实际踏面高度落脚。', speedMultiplier: 0.64, capsuleScale: 1 },
+  { id: 'stairs-down', label: '下楼梯', description: '向低一级踏面探脚，支撑腿缓冲，根据实际踏面高度落脚。', speedMultiplier: 0.58, capsuleScale: 1 },
+  { id: 'backward', label: '后退', description: '脚尖向后探地，胸肩、颈和头分担转身，回头看向后方。', speedMultiplier: 0.62, capsuleScale: 1 },
   { id: 'strafe-left', label: '向左侧移', description: '左脚打开、右脚并拢，屈膝横向转移重心。', speedMultiplier: 0.7, capsuleScale: 1 },
   { id: 'strafe-right', label: '向右侧移', description: '右脚打开、左脚并拢，上身朝向保持稳定。', speedMultiplier: 0.7, capsuleScale: 1 },
   { id: 'hop', label: '双脚跳行', description: '双腿同步预蹲、伸展腾空、屈膝吸收落地。', speedMultiplier: 0.78, capsuleScale: 1 },
   { id: 'swim', label: '自由泳', description: '水平俯卧、左右滚转、曲肘划水和交替打腿。', speedMultiplier: 0.72, capsuleScale: 0.42 },
   { id: 'balance', label: '平衡木', description: '双臂展开，脚尖沿中线落下，躯干微调平衡。', speedMultiplier: 0.42, capsuleScale: 1 },
   { id: 'march', label: '高抬腿', description: '大幅抬膝，伸直支撑腿，对侧屈肘前摆。', speedMultiplier: 0.76, capsuleScale: 1 },
-  { id: 'tiptoe', label: '踮脚', description: '提踵、前脚掌轻落，保持柔和的膝踝弹性。', speedMultiplier: 0.48, capsuleScale: 1 },
+  { id: 'tiptoe', label: '踮脚', description: '明显抬起脚跟，以前脚掌支撑，保持膝踝弹性。', speedMultiplier: 0.48, capsuleScale: 1 },
   { id: 'wade', label: '涉水', description: '高抬脚跨过水面，缓慢落脚，手臂向外平衡。', speedMultiplier: 0.45, capsuleScale: 1 },
   { id: 'skate', label: '滑步', description: '交替向侧后方蹬伸，屈膝滑行与骨盆侧移。', speedMultiplier: 1.45, capsuleScale: 0.9 },
   { id: 'limping', label: '跛行', description: '不对称支撑时间、右腿减负、肩部补偿。', speedMultiplier: 0.5, capsuleScale: 1 },
-  { id: 'dance', label: '律动步', description: '交叉踏步，肩髋反向扭转，手腕与肘关节律动。', speedMultiplier: 0.65, capsuleScale: 1 },
+  { id: 'dance', label: '律动步', description: '左右交替向前落脚、蹬地与回收，肩髋反扭并配合手臂律动。', speedMultiplier: 0.65, capsuleScale: 1 },
 ];
 
 const BONE_NAMES: VRMHumanBoneName[] = [
@@ -46,7 +46,18 @@ const BONE_NAMES: VRMHumanBoneName[] = [
   'leftFoot', 'rightFoot', 'leftToes', 'rightToes',
 ];
 type BoneState = { node: THREE.Object3D; rotation: THREE.Quaternion; position: THREE.Vector3; pose: THREE.Euler };
-type LegSide = 'left' | 'right';
+export type LegSide = 'left' | 'right';
+export interface FootSupport {
+  side: LegSide;
+  local: THREE.Vector3;
+  forefootLocal: THREE.Vector3;
+  heelLocal?: THREE.Vector3;
+}
+export interface CrawlContact {
+  side: LegSide;
+  kind: 'palm' | 'knee';
+  local: THREE.Vector3;
+}
 type LegDimensions = { thigh: number; shin: number; height: number };
 type GroundGait = { stride: number; stance: number; clearance: number; knee: number; roll: number };
 const TAU = Math.PI * 2;
@@ -55,17 +66,18 @@ const clamp = THREE.MathUtils.clamp;
 // proportions share the same gait without sharing the same world-space cadence.
 const GROUND_GAITS: Partial<Record<LocomotionStyle, GroundGait>> = {
   walk: { stride: 1.2, stance: 0.58, clearance: 0.13, knee: 0.13, roll: 0.12 },
-  run: { stride: 2.0, stance: 0.39, clearance: 0.33, knee: 0.88, roll: 0.14 },
-  sprint: { stride: 2.5, stance: 0.36, clearance: 0.4, knee: 0.95, roll: 0.17 },
-  sneak: { stride: 0.8, stance: 0.65, clearance: 0.09, knee: 0.75, roll: 0.045 },
+  run: { stride: 1.7, stance: 0.42, clearance: 0.24, knee: 0.65, roll: 0.12 },
+  sprint: { stride: 2.7, stance: 0.34, clearance: 0.5, knee: 1.12, roll: 0.22 },
+  sneak: { stride: 1.22, stance: 0.72, clearance: 0.12, knee: 0.9, roll: 0.035 },
   crouch: { stride: 0.65, stance: 0.68, clearance: 0.1, knee: 1.28, roll: 0.035 },
-  'stairs-up': { stride: 0.9, stance: 0.62, clearance: 0.3, knee: 0.28, roll: 0.08 },
-  'stairs-down': { stride: 0.8, stance: 0.64, clearance: 0.18, knee: 0.48, roll: 0.06 },
+  'stairs-up': { stride: 0.92, stance: 0.66, clearance: 0.39, knee: 0.45, roll: 0.06 },
+  'stairs-down': { stride: 0.82, stance: 0.7, clearance: 0.15, knee: 0.72, roll: 0.045 },
   backward: { stride: 0.8, stance: 0.62, clearance: 0.1, knee: 0.22, roll: 0.07 },
   balance: { stride: 0.75, stance: 0.66, clearance: 0.1, knee: 0.2, roll: 0.06 },
   march: { stride: 1.0, stance: 0.59, clearance: 0.36, knee: 0.18, roll: 0.07 },
   tiptoe: { stride: 0.75, stance: 0.62, clearance: 0.12, knee: 0.2, roll: 0.04 },
   wade: { stride: 0.85, stance: 0.65, clearance: 0.32, knee: 0.25, roll: 0.06 },
+  dance: { stride: 1.25, stance: 0.6, clearance: 0.26, knee: 0.32, roll: 0.09 },
 };
 
 /** Animates normalized humanoid bones from a T-pose rest pose.
@@ -91,6 +103,28 @@ export class ProceduralLocomotion {
   private previousStyle: LocomotionStyle | null = null;
   private styleAge = 0;
   private readonly legHeight: number;
+  private supports: FootSupport[] = [];
+  private supportFloor: (() => number) | null = null;
+  private stairSurface: ((point: THREE.Vector3) => number | null) | null = null;
+  private readonly handFrames = new Map<LegSide, THREE.Matrix4>();
+  private crawlContacts: CrawlContact[] = [];
+  private stairTargets: { side: LegSide; clearance: number }[] = [];
+
+  configureGrounding(
+    supports: FootSupport[],
+    floor: () => number,
+    stairSurface: (point: THREE.Vector3) => number | null,
+  ): void {
+    this.supports = supports;
+    this.supportFloor = floor;
+    this.stairSurface = stairSurface;
+  }
+
+  configureCrawlContacts(contacts: CrawlContact[]): void {
+    this.crawlContacts = contacts;
+  }
+
+  get basis(): THREE.Quaternion { return this.poseBasis.clone(); }
 
   constructor(getBone: (name: VRMHumanBoneName) => THREE.Object3D | null) {
     for (const name of BONE_NAMES) {
@@ -121,6 +155,25 @@ export class ProceduralLocomotion {
       this.legHeight = Math.max(0.1, Math.abs(hipPosition.y - footPosition.y) / Math.max(0.001, Math.abs(parentScale)));
     } else this.legHeight = Math.max(0.5, hips?.position.y ?? 0.9);
     for (const side of ['left', 'right'] as const) {
+      const hand = getBone(`${side}Hand`);
+      const index = getBone(`${side}IndexProximal`);
+      const little = getBone(`${side}LittleProximal`);
+      if (hand && index && little) {
+        const a = hand.worldToLocal(index.getWorldPosition(new THREE.Vector3()));
+        const b = hand.worldToLocal(little.getWorldPosition(new THREE.Vector3()));
+        const forward = a.clone().add(b).normalize();
+        const across = a.clone().sub(b).normalize();
+        const thumb = getBone(`${side}ThumbProximal`) ?? getBone(`${side}ThumbDistal`) ?? getBone(`${side}ThumbMetacarpal`);
+        if (thumb) {
+          const t = hand.worldToLocal(thumb.getWorldPosition(new THREE.Vector3()));
+          t.addScaledVector(forward, -t.dot(forward));
+          if (t.lengthSq() > 1e-6) across.copy(t.normalize());
+        }
+        const normal = forward.clone().cross(across).multiplyScalar(side === 'left' ? 1 : -1).normalize();
+        const right = normal.clone().cross(forward).normalize();
+        normal.crossVectors(forward, right).normalize();
+        if (right.lengthSq() > 0.5) this.handFrames.set(side, new THREE.Matrix4().makeBasis(right, normal, forward).invert());
+      }
       const upper = this.bones.get(`${side}UpperLeg`)?.node;
       const lower = this.bones.get(`${side}LowerLeg`)?.node;
       const ankle = this.bones.get(`${side}Foot`)?.node;
@@ -146,6 +199,7 @@ export class ProceduralLocomotion {
     this.previousStyle = null;
     this.styleAge = 0;
     this.wasGrounded = true;
+    this.stairTargets = [];
   }
 
   update(deltaSeconds: number, style: LocomotionStyle, moving: boolean, grounded: boolean, speed: number): void {
@@ -169,6 +223,7 @@ export class ProceduralLocomotion {
     // intent alive while blocked; the controller separately owns real movement.
     if (active) this.phase = (this.phase + delta * TAU * speed / Math.max(0.05, cycleDistance)) % TAU;
     for (const bone of this.bones.values()) bone.pose.set(0, 0, 0);
+    this.stairTargets = [];
     this.offset.set(0, 0, 0);
     this.idlePose();
     this.gaitPose(style);
@@ -206,6 +261,197 @@ export class ProceduralLocomotion {
         bone.node.position.lerp(this.targetPosition, blend);
       }
     }
+    if (style === 'crawl') {
+      if (grounded) this.solveCrawlContacts();
+      this.orientHands('crawl');
+    }
+    if (style === 'ladder') {
+      this.solveLadderArms();
+      this.orientHands('ladder');
+    }
+    if (grounded) {
+      this.applyFootGrounding(style);
+      if (this.stairTargets.length) this.applyStairContacts();
+    }
+  }
+
+  private orientHands(style: 'crawl' | 'ladder'): void {
+    const normal = style === 'crawl' ? new THREE.Vector3(0, -1, 0) : new THREE.Vector3(0, 0, 1);
+    const forward = style === 'crawl' ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(0, 1, 0);
+    const desired = new THREE.Matrix4().makeRotationFromQuaternion(this.worldBasis())
+      .multiply(new THREE.Matrix4().makeBasis(normal.clone().cross(forward), normal, forward));
+    for (const [side, local] of this.handFrames) {
+      const hand = this.bones.get(`${side}Hand`)?.node;
+      if (!hand?.parent) continue;
+      const world = new THREE.Quaternion().setFromRotationMatrix(desired.clone().multiply(local));
+      hand.quaternion.copy(hand.parent.getWorldQuaternion(new THREE.Quaternion()).invert().multiply(world));
+    }
+  }
+
+  private worldBasis(): THREE.Quaternion {
+    const basis = new THREE.Quaternion();
+    this.bones.get('hips')?.node.parent?.getWorldQuaternion(basis);
+    return basis.multiply(this.poseBasis);
+  }
+
+  private solveLadderArms(): void {
+    const basis = this.worldBasis();
+    const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(basis);
+    const lateral = new THREE.Vector3(1, 0, 0).applyQuaternion(basis);
+    for (const side of this.handFrames.keys()) {
+      const upper = this.bones.get(`${side}UpperArm`)?.node;
+      const lower = this.bones.get(`${side}LowerArm`)?.node;
+      const hand = this.bones.get(`${side}Hand`)?.node;
+      if (!upper || !lower || !hand) continue;
+      const shoulder = upper.getWorldPosition(new THREE.Vector3());
+      const elbow = lower.getWorldPosition(new THREE.Vector3());
+      const length = shoulder.distanceTo(elbow) + elbow.distanceTo(hand.getWorldPosition(new THREE.Vector3()));
+      const phase = this.phase + (side === 'right' ? Math.PI : 0);
+      const reach = (Math.sin(phase) * this.activity + 1) * 0.5;
+      const sign = side === 'left' ? 1 : -1;
+      const target = shoulder.addScaledVector(forward, length * 0.36).addScaledVector(lateral, sign * length * 0.04);
+      target.y += length * (0.18 + reach * 0.72);
+      const pole = forward.clone().multiplyScalar(-0.5).addScaledVector(lateral, sign * 0.6);
+      pole.y -= 0.4;
+      this.solveLimb(upper, lower, hand, target, pole, 1.78);
+    }
+  }
+
+  private solveCrawlContacts(): void {
+    const hips = this.bones.get('hips')?.node;
+    if (!hips?.parent || !this.supportFloor || !this.crawlContacts.length) return;
+    const floor = this.supportFloor();
+    let kneeY = Infinity;
+    for (const contact of this.crawlContacts) {
+      if (contact.kind !== 'knee') continue;
+      const knee = this.bones.get(`${contact.side}LowerLeg`)?.node;
+      if (knee) kneeY = Math.min(kneeY, knee.localToWorld(contact.local.clone()).y);
+    }
+    if (Number.isFinite(kneeY)) {
+      const position = hips.getWorldPosition(new THREE.Vector3());
+      position.y += floor - kneeY;
+      hips.position.copy(hips.parent.worldToLocal(position));
+    }
+    const basis = this.worldBasis();
+    const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(basis);
+    const lateral = new THREE.Vector3(1, 0, 0).applyQuaternion(basis);
+    const palmFrame = new THREE.Matrix4().makeRotationFromQuaternion(basis).multiply(
+      new THREE.Matrix4().makeBasis(new THREE.Vector3(-1, 0, 0), new THREE.Vector3(0, -1, 0), new THREE.Vector3(0, 0, 1)),
+    );
+    for (const { side, kind, local } of this.crawlContacts) {
+      if (kind !== 'palm') continue;
+      const upper = this.bones.get(`${side}UpperArm`)?.node;
+      const lower = this.bones.get(`${side}LowerArm`)?.node;
+      const hand = this.bones.get(`${side}Hand`)?.node;
+      const frame = this.handFrames.get(side);
+      if (!upper || !lower || !hand || !frame) continue;
+      const phase = this.phase + (side === 'right' ? Math.PI : 0);
+      const lift = Math.max(0, -Math.cos(phase)) * 0.1 * this.activity;
+      const desiredHand = new THREE.Quaternion().setFromRotationMatrix(palmFrame.clone().multiply(frame));
+      const offset = local.clone().multiply(hand.getWorldScale(new THREE.Vector3())).applyQuaternion(desiredHand);
+      const sign = side === 'left' ? 1 : -1;
+      // The planted hand travels backward and returns forward while lifted.
+      const target = upper.getWorldPosition(new THREE.Vector3())
+        .addScaledVector(forward, 0.1 - Math.sin(phase) * 0.14 * this.activity)
+        .addScaledVector(lateral, sign * 0.015);
+      target.y = floor + lift - offset.y;
+      const pole = forward.clone().negate().addScaledVector(lateral, sign * 0.25);
+      this.solveLimb(upper, lower, hand, target, pole, 1.78);
+    }
+  }
+
+  private solveLimb(upper: THREE.Object3D, lower: THREE.Object3D, end: THREE.Object3D, target: THREE.Vector3, pole: THREE.Vector3, maxFlex = 2.22): void {
+    const origin = upper.getWorldPosition(new THREE.Vector3());
+    const joint = lower.getWorldPosition(new THREE.Vector3());
+    const upperLength = origin.distanceTo(joint);
+    const lowerLength = joint.distanceTo(end.getWorldPosition(new THREE.Vector3()));
+    const direction = target.clone().sub(origin);
+    if (upperLength < 0.002 || lowerLength < 0.002 || direction.lengthSq() < 1e-8) return;
+    const minReach = Math.sqrt(upperLength ** 2 + lowerLength ** 2 + 2 * upperLength * lowerLength * Math.cos(maxFlex));
+    const distance = clamp(direction.length(), minReach, upperLength + lowerLength - 0.001);
+    direction.normalize();
+    pole.addScaledVector(direction, -pole.dot(direction));
+    if (pole.lengthSq() < 1e-6) {
+      pole.set(Math.abs(direction.x) < 0.8 ? 1 : 0, Math.abs(direction.x) < 0.8 ? 0 : 1, 0);
+      pole.addScaledVector(direction, -pole.dot(direction));
+    }
+    pole.normalize();
+    const cosine = clamp((upperLength ** 2 + distance ** 2 - lowerLength ** 2) / (2 * upperLength * distance), -1, 1);
+    const bend = origin.clone().addScaledVector(direction, upperLength * cosine)
+      .addScaledVector(pole, upperLength * Math.sqrt(1 - cosine ** 2));
+    const rotate = (bone: THREE.Object3D, child: THREE.Object3D, goal: THREE.Vector3) => {
+      const pivot = bone.getWorldPosition(new THREE.Vector3());
+      const current = child.getWorldPosition(new THREE.Vector3()).sub(pivot).normalize();
+      const desired = goal.clone().sub(pivot).normalize();
+      const rotation = new THREE.Quaternion().setFromUnitVectors(current, desired)
+        .multiply(bone.getWorldQuaternion(new THREE.Quaternion()));
+      if (bone.parent) rotation.premultiply(bone.parent.getWorldQuaternion(new THREE.Quaternion()).invert());
+      bone.quaternion.copy(rotation);
+    };
+    rotate(upper, lower, bend);
+    rotate(lower, end, origin.addScaledVector(direction, distance));
+  }
+
+  private applyFootGrounding(style: LocomotionStyle): void {
+    const hips = this.bones.get('hips')?.node;
+    if (!hips?.parent || !this.supportFloor || !this.supports.length || ['swim', 'crawl', 'ladder', 'hop'].includes(style)) return;
+    const gait = GROUND_GAITS[style];
+    const cycle = this.phase / TAU;
+    // Only running and sprinting have a flight phase with no supporting foot.
+    if (gait && gait.stance < 0.5 && this.activity >= 0.08 && cycle % 0.5 >= gait.stance) return;
+    let lowest = Infinity;
+    for (const { side, local, forefootLocal } of this.supports) {
+      const foot = this.bones.get(`${side}Foot`)?.node;
+      const point = style === 'tiptoe' ? forefootLocal : local;
+      if (foot) lowest = Math.min(lowest, foot.localToWorld(point.clone()).y);
+    }
+    if (!Number.isFinite(lowest)) return;
+    const position = hips.getWorldPosition(new THREE.Vector3());
+    position.y += this.supportFloor() - lowest;
+    hips.position.copy(hips.parent.worldToLocal(position));
+  }
+
+  private applyStairContacts(): void {
+    const hips = this.bones.get('hips')?.node;
+    if (!hips?.parent || !this.stairSurface) return;
+    const scale = Math.abs(hips.parent.getWorldScale(new THREE.Vector3()).y);
+    const basis = this.worldBasis();
+    const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(basis);
+    const goals = [];
+    let pelvisOffset = 0;
+    for (const target of this.stairTargets) {
+      const support = this.supports.find(entry => entry.side === target.side);
+      const upper = this.bones.get(`${target.side}UpperLeg`)?.node;
+      const lower = this.bones.get(`${target.side}LowerLeg`)?.node;
+      const foot = this.bones.get(`${target.side}Foot`)?.node;
+      if (!support || !upper || !lower || !foot?.parent) continue;
+      const sole = foot.localToWorld(support.local.clone());
+      // A paw can bridge the edge even when its centre is still over the lower tread.
+      const contacts = [sole, foot.localToWorld(support.forefootLocal.clone())];
+      if (support.heelLocal) contacts.push(foot.localToWorld(support.heelLocal.clone()));
+      const levels = contacts.map(this.stairSurface).filter(height => height !== null);
+      if (!levels.length) continue;
+      const surface = Math.max(...levels);
+      const ankle = foot.getWorldPosition(new THREE.Vector3());
+      const knee = lower.getWorldPosition(new THREE.Vector3());
+      const hip = upper.getWorldPosition(new THREE.Vector3());
+      const reach = hip.distanceTo(knee) + knee.distanceTo(ankle) - 0.004;
+      ankle.y += surface + target.clearance * scale - sole.y;
+      const horizontal = Math.hypot(hip.x - ankle.x, hip.z - ankle.z);
+      if (horizontal < reach) {
+        pelvisOffset = Math.min(pelvisOffset, ankle.y + Math.sqrt(reach ** 2 - horizontal ** 2) - hip.y);
+      }
+      goals.push({ upper, lower, foot, ankle, orientation: foot.getWorldQuaternion(new THREE.Quaternion()) });
+    }
+    if (pelvisOffset < 0) {
+      const position = hips.getWorldPosition(new THREE.Vector3());
+      position.y += Math.max(pelvisOffset, -0.12);
+      hips.position.copy(hips.parent.worldToLocal(position));
+    }
+    for (const { upper, lower, foot, ankle, orientation } of goals) {
+      this.solveLimb(upper, lower, foot, ankle, forward.clone());
+      foot.quaternion.copy(foot.parent!.getWorldQuaternion(new THREE.Quaternion()).invert().multiply(orientation));
+    }
   }
 
   private set(name: VRMHumanBoneName, x = 0, y = 0, z = 0): void { this.bones.get(name)?.pose.set(x, y, z); }
@@ -233,13 +479,14 @@ export class ProceduralLocomotion {
 
   /** A flat-ground, sagittal two-link solve; terrain height still belongs to
    * the character controller. Stance feet travel backwards at requested speed,
-   * while only the returning foot lifts. This is not terrain/contact IK. */
+   * while only the returning foot lifts. The stair pose is then fitted to the actual collision surfaces. */
   private groundGaitPose(style: LocomotionStyle, gait: GroundGait): void {
     if (!this.legs.size) return;
     const dimensions = this.legs.get('left') ?? this.legs.get('right')!;
     const length = dimensions.thigh + dimensions.shin;
     const a = this.activity;
     const low = style === 'crouch' || style === 'sneak';
+    const stairs = style === 'stairs-up' || style === 'stairs-down';
     const running = style === 'run' || style === 'sprint';
     const reverse = style === 'backward' ? -1 : 1;
     const span = gait.stride * length * gait.stance * a;
@@ -267,7 +514,8 @@ export class ProceduralLocomotion {
         lift = Math.pow(Math.sin(Math.PI * swing), 1.5) * gait.clearance * length * a;
         roll = gait.roll * Math.cos(Math.PI * swing) * a;
       }
-      if (style === 'tiptoe') { roll += 0.28; toe -= 0.28; }
+      if (stairs) this.stairTargets.push({ side, clearance: lift });
+      if (style === 'tiptoe') { roll += 0.68; toe -= 0.68; }
       // Leave room for toe/heel rotation without pushing the sole through the
       // rest support plane. The ankle itself is not the bottom of the foot.
       lift += Math.max(0, roll) * length * 0.15 + Math.max(0, -roll) * length * 0.06;
@@ -275,6 +523,11 @@ export class ProceduralLocomotion {
       const reach = Math.sqrt(dimensions.thigh ** 2 + dimensions.shin ** 2 + 2 * dimensions.thigh * dimensions.shin * Math.cos(knee));
       bodyHeight = Math.min(bodyHeight, Math.sqrt(Math.max(0.01, reach * reach - z * z)) + lift);
       targets.push({ side, z: z * reverse, lift, roll: roll * reverse, toe });
+    }
+    if(low){
+      // A low, quiet gait must not bob to the free foot's lift trajectory.
+      const reach=Math.sqrt(dimensions.thigh**2+dimensions.shin**2+2*dimensions.thigh*dimensions.shin*Math.cos(gait.knee));
+      bodyHeight=Math.sqrt(Math.max(0.01,reach*reach-(span*0.5)**2));
     }
     if (running) {
       const halfCycle = (this.phase / TAU) % 0.5;
@@ -288,16 +541,18 @@ export class ProceduralLocomotion {
       bodyHeight = THREE.MathUtils.lerp(dimensions.height, bodyHeight, a);
     }
     this.offset.y = (bodyHeight - dimensions.height) / this.legHeight;
-    this.offset.x = Math.sin(this.phase) * 0.012 * a;
-    this.set('hips', 0, Math.sin(this.phase) * 0.025 * a, 0);
+    this.offset.x = Math.sin(this.phase) * (style==='dance'?0.06:0.012) * a;
+    const pelvisPitch=style==='sneak'?0.22:style==='crouch'?0.1:style==='sprint'?0.14*a:style==='run'?0.04*a:0;
+    this.set('hips', pelvisPitch, Math.sin(this.phase) * (style==='dance'?0.2:0.025) * a, style==='dance'?Math.sin(this.phase)*0.045*a:0);
     for (const target of targets) {
       const leg = this.legs.get(target.side);
       if (!leg) continue;
       const y = leg.height + this.offset.y * this.legHeight - target.lift;
-      const distance = clamp(Math.hypot(y, target.z), Math.abs(leg.thigh - leg.shin) + 0.001, leg.thigh + leg.shin - 0.0001);
+      const minReach = Math.sqrt(leg.thigh ** 2 + leg.shin ** 2 + 2 * leg.thigh * leg.shin * Math.cos(2.22));
+      const distance = clamp(Math.hypot(y, target.z), minReach, leg.thigh + leg.shin - 0.0001);
       const knee = Math.acos(clamp((distance * distance - leg.thigh * leg.thigh - leg.shin * leg.shin) / (2 * leg.thigh * leg.shin), -1, 1));
       const hip = Math.atan2(-target.z, y) - Math.atan2(leg.shin * Math.sin(knee), leg.thigh + leg.shin * Math.cos(knee));
-      this.set(`${target.side}UpperLeg`, hip);
+      this.set(`${target.side}UpperLeg`, hip-pelvisPitch);
       this.set(`${target.side}LowerLeg`, knee);
       this.set(`${target.side}Foot`, -hip - knee + target.roll);
       this.set(`${target.side}Toes`, target.toe);
@@ -305,9 +560,9 @@ export class ProceduralLocomotion {
       // Keep the opposite arm forward as the leg advances; the old sine phase
       // put the arm and planted foot on unrelated portions of the cycle.
       const arm = Math.cos(this.phase + (target.side === 'right' ? Math.PI : 0));
-      if (style !== 'balance' && style !== 'wade' && style !== 'stairs-up' && style !== 'stairs-down') {
-        this.set(`${target.side}UpperArm`, arm * (running ? 0.78 : 0.36) * a - (low ? 0.2 : 0.03), 0, -sign * (low ? 1.32 : 1.43));
-        this.set(`${target.side}LowerArm`, 0, -sign * (running ? 1.22 + arm * 0.22 * a : low ? 0.7 : 0.2 + Math.max(0, -arm) * 0.25 * a));
+      if (!['balance','wade','stairs-up','stairs-down','dance'].includes(style)) {
+        this.set(`${target.side}UpperArm`, arm*(style==='sprint'?1.15:running?0.62:0.36)*a-(style==='sneak'?0.55:low?0.3:0.03),0,-sign*(style==='sneak'?1.05:low?1.2:1.43));
+        this.set(`${target.side}LowerArm`,0,-sign*(style==='sprint'?1.48+arm*0.29*a:running?1.12+arm*0.15*a:low?0.9:0.2+Math.max(0,-arm)*0.25*a));
       }
     }
   }
@@ -325,9 +580,9 @@ export class ProceduralLocomotion {
     this.offset.y += (running ? 0.025 + Math.abs(Math.cos(p)) * 0.045 : -Math.abs(Math.sin(p)) * 0.035) * a;
     this.offset.y -= style === 'crouch' ? 0.26 : style === 'sneak' ? 0.11 : style === 'skate' ? 0.1 : 0;
     this.set('hips', running ? 0.07 * a : 0, Math.sin(p) * 0.075 * a, -Math.sin(p) * 0.035 * a);
-    this.add('spine', (running ? 0.18 : low ? 0.23 : 0.035) * (low ? 1 : a), -Math.sin(p) * 0.11 * a);
-    this.add('chest', running ? 0.05 * a : 0, -Math.sin(p) * 0.06 * a);
-    this.add('head', (running ? -0.17 : low ? -0.19 : 0) * (low ? 1 : a));
+    this.add('spine', (style==='sprint'?0.32:running?0.14:style==='sneak'?0.48:style==='crouch'?0.3:0.035) * (low ? 1 : a), -Math.sin(p) * 0.11 * a);
+    this.add('chest', style==='sneak'?0.13:style==='crouch'?0.09:style==='sprint'?0.09*a:running?0.03*a:0, -Math.sin(p) * 0.06 * a);
+    this.add('head', (style==='sprint'?-0.4:running?-0.18:style==='sneak'?-0.7:low?-0.36:0) * (low ? 1 : a));
     for (const side of ['left', 'right'] as const) {
       const sign = side === 'left' ? 1 : -1;
       const phase = p + (side === 'right' ? Math.PI : 0);
@@ -340,8 +595,8 @@ export class ProceduralLocomotion {
       this.set(`${side}LowerLeg`, flex);
       this.set(`${side}Foot`, -hip - flex + heelRoll);
       this.set(`${side}Toes`, -Math.max(0, -swing) * 0.27 * a);
-      this.set(`${side}UpperArm`, swing * (running ? 0.88 : 0.4) * a - (low ? 0.2 : 0.03), 0, -sign * (low ? 1.32 : 1.43));
-      this.set(`${side}LowerArm`, 0, -sign * (running ? 1.35 + swing * 0.2 * a : low ? 0.7 : 0.17 + Math.max(0, -swing) * 0.28 * a));
+      this.set(`${side}UpperArm`, swing * (style==='sprint'?1.15:running?0.62:0.4) * a - (style==='sneak'?0.55:low?0.3:0.03), 0, -sign * (style==='sneak'?1.05:low?1.2:1.43));
+      this.set(`${side}LowerArm`, 0, -sign * (style==='sprint'?1.5+swing*0.32*a:running?1.12+swing*0.15*a:low?0.9:0.17+Math.max(0,-swing)*0.28*a));
       this.set(`${side}Hand`, 0, sign * Math.sin(phase - 0.4) * 0.06 * a, sign * (running ? 0.12 : 0.03));
       if (style === 'stairs-up' || style === 'stairs-down') {
         this.set(`${side}UpperLeg`, -0.1 - (style === 'stairs-up' ? 0.72 : 0.48) * Math.max(0, swing) * a + Math.min(0, swing) * -0.18 * a);
@@ -372,7 +627,7 @@ export class ProceduralLocomotion {
     if (style === 'stairs-down') { this.offset.y -= 0.055; this.set('head', 0.16); }
     if (style === 'tiptoe') this.offset.y += 0.055;
     if (style === 'balance') { this.set('hips', 0, 0, Math.sin(p * 0.5) * 0.045); this.set('head', 0.12); }
-    if (style === 'backward') { this.set('neck', 0, 0.19); this.set('head', 0, 0.25); }
+    if (style === 'backward') { this.set('spine',0.06,0.28);this.set('chest',0.04,0.42);this.set('neck',0,0.72);this.set('head',0,1.02); }
     if (style === 'strafe-left' || style === 'strafe-right') this.strafePose(style === 'strafe-left' ? 1 : -1);
     if (style === 'crawl') this.crawlPose();
     if (style === 'ladder') this.ladderPose();
@@ -384,63 +639,55 @@ export class ProceduralLocomotion {
   }
 
   private strafePose(direction: number): void {
-    const a = this.activity;
-    const wave = Math.sin(this.phase);
-    this.offset.x = wave * 0.055 * a;
-    this.offset.y = -0.055 - Math.abs(wave) * 0.025 * a;
-    this.set('hips', 0, 0, -direction * 0.035 * a);
-    this.set('spine', 0.08, 0, direction * 0.035 * a);
-    for (const side of ['left', 'right'] as const) {
-      const sign = side === 'left' ? 1 : -1;
-      const lead = sign === direction;
-      const lift = Math.max(0, lead ? wave : -wave) * a;
-      this.set(`${side}UpperLeg`, -0.18 - lift * 0.1, 0, direction * wave * 0.28 * a);
-      this.set(`${side}LowerLeg`, 0.36 + lift * 0.35);
-      this.set(`${side}Foot`, -0.18 - lift * 0.25, 0, -direction * wave * 0.25 * a);
-      this.set(`${side}UpperArm`, -0.15, 0, -sign * 1.12);
-      this.set(`${side}LowerArm`, 0, -sign * 0.75);
+    const a=this.activity,cycle=this.phase/TAU;
+    this.offset.set(Math.sin(this.phase)*0.035*a,-0.07-Math.abs(Math.sin(this.phase))*0.015*a,0);
+    this.set('hips',0,0,-direction*0.025*a);this.set('spine',0.08,0,direction*0.025*a);
+    for(const side of ['left','right'] as const){
+      const sign=side==='left'?1:-1,lead=sign===direction;
+      const t=(cycle+(lead?0:0.5))%1,swing=t<0.43,u=swing?t/0.43:(t-0.43)/0.57;
+      const lateral=direction*(swing?(-0.5+u*u*(3-2*u)):(0.5-u))*0.5*a;
+      const lift=swing?Math.sin(Math.PI*u)*a:0;
+      // Lead foot opens; trailing foot closes. Adduction is capped to avoid crossing.
+      const z=sign*clamp(sign*lateral,-0.10,0.38);
+      this.set(`${side}UpperLeg`,-0.16-lift*0.4,0,z);
+      this.set(`${side}LowerLeg`,0.32+lift*0.85);
+      this.set(`${side}Foot`,-0.16-lift*0.45,0,-z);
+      this.set(`${side}UpperArm`,-0.15+Math.sin(this.phase)*sign*0.1*a,0,-sign*1.12);
+      this.set(`${side}LowerArm`,0,-sign*0.75);
     }
   }
 
   private crawlPose(): void {
-    const a = this.activity;
-    this.offset.set(Math.sin(this.phase) * 0.03 * a, -0.5 + Math.cos(this.phase * 2) * 0.015 * a, 0);
-    this.set('hips', 1.28, Math.sin(this.phase) * 0.045 * a);
-    this.set('spine', 0.1, -Math.sin(this.phase) * 0.06 * a);
-    this.set('chest', 0.02);
-    this.set('neck', -0.35);
-    this.set('head', -0.85);
-    for (const side of ['left', 'right'] as const) {
-      const sign = side === 'left' ? 1 : -1;
-      const phase = this.phase + (side === 'right' ? Math.PI : 0);
-      const wave = Math.sin(phase) * a;
-      const lift = Math.max(0, Math.cos(phase)) * a;
-      this.set(`${side}UpperLeg`, -1.5 - wave * 0.21, 0, sign * 0.13);
-      this.set(`${side}LowerLeg`, 1.88 + lift * 0.08);
-      this.set(`${side}Foot`, -1.6 - lift * 0.08);
-      this.set(`${side}Toes`, 0.3);
-      this.set(`${side}UpperArm`, -1.46 + wave * 0.32, 0, -sign * 1.38);
-      this.set(`${side}LowerArm`, 0, -sign * (0.22 + Math.max(0, -Math.cos(phase)) * 0.65 * a));
-      this.set(`${side}Hand`, 0.1, sign * 0.16, -sign * 1.02);
+    const a=this.activity,p=this.phase,body=1.43;
+    this.offset.set(Math.sin(p)*0.035*a,-0.45+Math.cos(p*2)*0.02*a,0);
+    this.set('hips',body,Math.sin(p)*0.04*a);this.set('spine',0.1,-Math.sin(p)*0.05*a);
+    this.set('chest',0.02);this.set('neck',-0.34);this.set('head',-0.99);
+    for(const side of ['left','right'] as const){
+      const sign=side==='left'?1:-1,phase=p+(side==='right'?Math.PI:0);
+      const wave=Math.sin(phase)*a,lift=Math.max(0,Math.cos(phase))*a;
+      const thigh=-1.44-wave*0.5,knee=1.8+lift*0.45;
+      this.set(`${side}UpperLeg`,thigh,0,sign*0.14);this.set(`${side}LowerLeg`,knee);
+      // Toes trail behind the kneeling body, not vertically into the ground.
+      this.set(`${side}Foot`,Math.PI-body-thigh-knee-0.12);this.set(`${side}Toes`,0.08);
+      this.set(`${side}UpperArm`,-1.38-wave*0.58,0,-sign*1.37);
+      this.set(`${side}LowerArm`,0,-sign*(0.18+Math.max(0,-Math.cos(phase))*1.0*a));
+      this.set(`${side}Hand`,0,0,0);
     }
   }
 
   private ladderPose(): void {
-    const a = this.activity;
-    this.offset.set(Math.sin(this.phase) * 0.028 * a, -0.08 + Math.sin(this.phase * 2) * 0.028 * a, 0.02);
-    this.set('hips', 0.07, Math.sin(this.phase) * 0.05 * a);
-    this.set('spine', 0.1);
-    this.set('chest', -0.06);
-    this.set('head', -0.28);
-    for (const side of ['left', 'right'] as const) {
-      const sign = side === 'left' ? 1 : -1;
-      const wave = Math.sin(this.phase + (side === 'right' ? Math.PI : 0)) * a;
-      this.set(`${side}UpperLeg`, -0.6 - wave * 0.4);
-      this.set(`${side}LowerLeg`, 0.9 + wave * 0.45);
-      this.set(`${side}Foot`, -0.3 - wave * 0.05);
-      this.set(`${side}UpperArm`, -2.25 + wave * 0.48, 0, -sign * 1.22);
-      this.set(`${side}LowerArm`, 0, -sign * (0.68 + wave * 0.4));
-      this.set(`${side}Hand`, 0, sign * 0.18, sign * 0.22);
+    const a=this.activity,p=this.phase;
+    this.offset.set(Math.sin(p)*0.03*a,-0.1+Math.sin(p*2)*0.04*a,0.025);
+    this.set('hips',0.06,Math.sin(p)*0.035*a);this.set('spine',0.08);this.set('chest',-0.04);this.set('head',-0.26);
+    for(const side of ['left','right'] as const){
+      const sign=side==='left'?1:-1,wave=Math.sin(p+(side==='right'?Math.PI:0));
+      const reach=(wave+1)*0.5,lift=Math.pow((1-wave)*0.5,1.3)*a;
+      this.set(`${side}UpperLeg`,-0.22-lift*1.05);this.set(`${side}LowerLeg`,0.4+lift*1.35);
+      this.set(`${side}Foot`,-0.18-lift*0.3);this.set(`${side}Toes`,-0.12);
+      // Hands actually reach above shoulder height, then the elbow pulls the body up.
+      this.set(`${side}UpperArm`,0.25+reach*0.08,0,sign*(0.4+reach*1.15));
+      this.set(`${side}LowerArm`,0,-sign*(1.2-reach*1.1));
+      this.set(`${side}Hand`,-0.12,sign*0.12,sign*0.08);
     }
   }
 
@@ -516,22 +763,16 @@ export class ProceduralLocomotion {
   }
 
   private dancePose(): void {
-    const a = this.activity;
-    const wave = Math.sin(this.phase);
-    this.offset.x = wave * 0.08 * a;
-    this.offset.y = -0.04 - Math.abs(Math.cos(this.phase)) * 0.07 * a;
-    this.set('hips', 0.04, wave * 0.23 * a, wave * 0.08 * a);
-    this.set('chest', 0, -wave * 0.32 * a);
-    this.set('head', 0, wave * 0.13 * a);
-    for (const side of ['left', 'right'] as const) {
-      const sign = side === 'left' ? 1 : -1;
-      const step = Math.max(0, wave * sign) * a;
-      this.set(`${side}UpperLeg`, -0.23 - step * 0.35, -sign * 0.08, wave * 0.16 * a);
-      this.set(`${side}LowerLeg`, 0.46 + step * 0.3);
-      this.set(`${side}Foot`, -0.23 + step * 0.05);
-      this.set(`${side}UpperArm`, -0.45 + wave * sign * 0.45 * a, 0, -sign * 0.75);
-      this.set(`${side}LowerArm`, 0, -sign * (1.1 + wave * sign * 0.35 * a));
-      this.set(`${side}Hand`, wave * 0.22 * a, 0, sign * 0.2);
+    const a=this.activity,p=this.phase,wave=Math.sin(p);
+    this.offset.x=wave*0.085*a;this.offset.y=-0.025-Math.abs(Math.cos(p))*0.045*a;
+    this.set('hips',0.04,wave*0.25*a,wave*0.09*a);this.set('chest',0,-wave*0.34*a);this.set('head',0,wave*0.13*a);
+    for(const side of ['left','right'] as const){
+      const sign=side==='left'?1:-1,step=Math.max(0,wave*sign)*a;
+      const thigh=-0.1-step*0.8,knee=0.2+step*1.25;
+      this.set(`${side}UpperLeg`,thigh,-sign*0.05,wave*0.11*a);this.set(`${side}LowerLeg`,knee);
+      this.set(`${side}Foot`,-thigh-knee+step*0.1,0,-wave*0.09*a);this.set(`${side}Toes`,-step*0.15);
+      this.set(`${side}UpperArm`,-0.5+wave*sign*0.65*a,0,-sign*(0.7+step*0.16));
+      this.set(`${side}LowerArm`,0,-sign*(1.05+wave*sign*0.4*a));this.set(`${side}Hand`,wave*0.24*a,0,sign*0.16);
     }
   }
 

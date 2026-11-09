@@ -12,8 +12,12 @@ import { BehaviorPlanner } from './behaviors';
 import { ProceduralLocomotion, LOCOMOTION_STYLES, type LocomotionStyle } from './locomotion';
 import { setLegacyShadeCompatibility } from './material-compat';
 import type { CollisionWorld, DemoConfig, MotionState, MovementMode } from './app-types';
+import { ArmSpread } from './arm-spread';
+import { FIRST_PERSON_LAYER, THIRD_PERSON_LAYER } from './preview-camera';
+import { sampleRigContacts } from './rig-contacts';
 
-type PreviewRigFactory = () => { scene: THREE.Group; getBone: (name: VRMHumanBoneName) => THREE.Object3D | null };
+type GetBone = (name: VRMHumanBoneName) => THREE.Object3D | null;
+type PreviewRigFactory = () => { scene: THREE.Group; getBone: GetBone };
 
 type Toast = (message: string, error?: boolean) => void;
 
@@ -30,6 +34,8 @@ export class CharacterController {
   shadeCompatibility = true;
   repairedMaterialCount = 0;
   private procedural: ProceduralLocomotion | null = null;
+  private armSpread: ArmSpread | null = null;
+  private armSpreadDegrees = 0;
   private demoScene: THREE.Group | null = null;
   private route: { points: THREE.Vector3[]; index: number; traversal: 'ground' | 'ladder' | 'swim' } | null = null;
   private completedRoute = false;
@@ -75,6 +81,16 @@ export class CharacterController {
   get previewing(): boolean { return this.previewAction !== null; }
   get previewPaused(): boolean { return this.previewAction?.paused ?? false; }
 
+  getFirstPersonHead(target: THREE.Vector3): THREE.Vector3 | null {
+    return this.vrm?.humanoid.getRawBoneNode('head')?.getWorldPosition(target) ?? null;
+  }
+
+  setArmSpread(degrees: number): void {
+    this.armSpreadDegrees = degrees;
+    this.armSpread?.set(degrees);
+    this.vrm?.humanoid.update();
+  }
+
   async loadFile(file: File): Promise<void> {
     const objectUrl = URL.createObjectURL(file);
     try {
@@ -108,6 +124,9 @@ export class CharacterController {
       });
 
       this.normalizeVisualSize(nextVrm.scene);
+      const contacts = sampleRigContacts(nextVrm);
+      if (contacts.soleY !== null) nextVrm.scene.position.y -= contacts.soleY;
+      nextVrm.firstPerson?.setup({ firstPersonOnlyLayer: FIRST_PERSON_LAYER, thirdPersonOnlyLayer: THIRD_PERSON_LAYER });
       if (nextVrm.lookAt) {
         const lookAtProxy = new VRMLookAtQuaternionProxy(nextVrm.lookAt);
         lookAtProxy.name = 'lookAtQuaternionProxy';
@@ -117,7 +136,9 @@ export class CharacterController {
       this.mixer = new THREE.AnimationMixer(nextVrm.scene);
       this.actions = {};
       this.currentAction = null;
-      this.procedural = new ProceduralLocomotion(name => nextVrm.humanoid.getNormalizedBoneNode(name));
+      this.initializePose(name => nextVrm.humanoid.getNormalizedBoneNode(name));
+      this.procedural?.configureGrounding(contacts.feet, () => this.position.y, point => this.findGroundHeight(this.worldMeshes, point));
+      this.procedural?.configureCrawlContacts(contacts.crawl);
       await this.loadAnimations(nextVrm);
       this.loaded = true;
       this.setMotionState('idle', true);
@@ -148,6 +169,7 @@ export class CharacterController {
       }
 
       // Replace only after validation so a bad file leaves the current preview playing.
+      this.armSpread?.restore();
       this.stopAnimationPreview();
       mixer.stopAllAction();
       this.currentAction = null;
@@ -166,6 +188,7 @@ export class CharacterController {
 
   stopAnimationPreview(): void {
     if (!this.previewAction) return;
+    this.armSpread?.restore();
     const clip = this.previewAction.getClip();
     this.previewAction.stop();
     this.mixer?.uncacheClip(clip);
@@ -193,10 +216,16 @@ export class CharacterController {
     this.normalizeVisualSize(demo.scene);
     this.demoScene = demo.scene;
     this.root.add(demo.scene);
-    this.procedural = new ProceduralLocomotion(demo.getBone);
+    this.initializePose(demo.getBone);
     this.loaded = true;
     this.root.visible = true;
     this.repairedMaterialCount = 0;
+  }
+
+  private initializePose(getBone: GetBone): void {
+    this.procedural = new ProceduralLocomotion(getBone);
+    this.armSpread = new ArmSpread(getBone, this.procedural.basis);
+    this.armSpread.set(this.armSpreadDegrees);
   }
 
   setShadeCompatibility(enabled: boolean): void {
@@ -273,7 +302,7 @@ export class CharacterController {
     if (this.capsuleDebug) this.capsuleDebug.visible = visible;
   }
 
-  update(deltaSeconds: number, camera: THREE.Camera, cursorPosition: THREE.Vector3 | null, world: CollisionWorld): void {
+  update(deltaSeconds: number, camera: THREE.Camera, cursorPosition: THREE.Vector3 | null, world: CollisionWorld, observer?: THREE.Vector3): void {
     if (!this.loaded) return;
     this.worldMeshes = world.meshes;
     const delta = Math.min(Math.max(deltaSeconds, 0), 0.05);
@@ -301,7 +330,7 @@ export class CharacterController {
         }
         if (this.route) this.activity = '场景路线 ' + this.route.index + '/' + (this.route.points.length - 1);
       } else if (!manualInput) {
-        const cameraPosition = new THREE.Vector3(); camera.getWorldPosition(cameraPosition);
+        const cameraPosition = observer ?? camera.getWorldPosition(new THREE.Vector3());
         const result = this.behavior.update(speed > 0 && !this.manipulating ? delta : 0, intentPosition, cameraPosition, cursorPosition);
         target = result.target;
         stopDistance = result.stopDistance ?? (this.mode === 'follow-player' ? this.config.character.followDistanceMeters : stopDistance);
@@ -343,6 +372,7 @@ export class CharacterController {
     }
     if (this.manipulating && this.mode === 'manual' && !this.route) this.movementIntent = this.joystick.length() > 0.08;
     const moving = speed > 0 && this.movementIntent;
+    this.armSpread?.restore();
     this.setMotionState(!this.grounded && !this.manipulating ? 'jump' : moving ? 'walk' : 'idle');
     // Treat the configured default 1.1 m/s gait as 1x clip playback, including when travel is blocked.
     this.currentAction?.setEffectiveTimeScale(this.motionState === 'walk' ? speed / 1.1 : 1);
@@ -350,6 +380,7 @@ export class CharacterController {
     if (!this.previewAction && (!this.currentAction || this.locomotionStyle !== 'walk')) {
       this.procedural?.update(delta, this.locomotionStyle, moving, this.grounded || this.manipulating, moving ? speed : 0);
     }
+    this.armSpread?.apply();
     this.vrm?.update(delta);
     if (this.capsuleDebug) {
       this.capsuleDebug.position.set(this.position.x, this.position.y + this.effectiveHeight / 2, this.position.z);
@@ -423,9 +454,11 @@ export class CharacterController {
     }
   }
 
-  private findGroundHeight(meshes: THREE.Mesh[]): number | null {
+  private findGroundHeight(meshes: THREE.Mesh[], contact: THREE.Vector3 = this.position): number | null {
     if (!meshes.length) return null;
     const origin = this.position.clone();
+    origin.x = contact.x;
+    origin.z = contact.z;
     origin.y += this.capsuleHeight + 0.5;
     this.raycaster.set(origin, new THREE.Vector3(0, -1, 0));
     this.raycaster.near = 0;
@@ -474,6 +507,7 @@ export class CharacterController {
     const previous = this.currentAction;
     this.motionState = next;
     if (this.previewAction) return;
+    this.armSpread?.restore();
     const nextAction = this.locomotionStyle === 'walk' ? this.actions[next] ?? null : null;
     if (nextAction && nextAction !== previous) {
       if (!previous) this.procedural?.reset();

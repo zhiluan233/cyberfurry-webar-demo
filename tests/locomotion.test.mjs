@@ -226,6 +226,29 @@ test('stairs gaits retain one supported foot on level platforms instead of float
   }
 });
 
+test('stairs use different contact heights when the two feet straddle a riser', () => {
+  const surface = point => point.z > 0 ? 0.2 : 0;
+  for (const style of ['stairs-up', 'stairs-down']) {
+    const rig = setup();
+    const feet = ['left', 'right'].map(side => {
+      const foot = rig.getBone(`${side}Foot`);
+      const sole = foot.getWorldPosition(new THREE.Vector3());
+      sole.y = 0;
+      const local = foot.worldToLocal(sole);
+      return { side, foot, local, forefootLocal: local.clone() };
+    });
+    rig.animation.configureGrounding(feet, () => 0, surface);
+    let contactsOnTwoLevels = 0;
+    for (let frame = 0; frame < 360; frame++) {
+      rig.animation.update(1 / 60, style, true, true, 0.7);
+      if (frame < 60) continue;
+      const soles = feet.map(({ foot, local }) => foot.localToWorld(local.clone()));
+      if (surface(soles[0]) !== surface(soles[1]) && soles.every(sole => Math.abs(sole.y - surface(sole)) < 0.025)) contactsOnTwoLevels++;
+    }
+    assert.ok(contactsOnTwoLevels > 12, `${style} uses both real treads during double support`);
+  }
+});
+
 test('style changes blend smoothly and repeated playback/reset has no rest-pose drift', () => {
   const rig = setup();
   const rests = new Map();

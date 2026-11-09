@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { CharacterController } from './character-controller';
 import { loadConfig } from './config';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { BEHAVIORS } from './behaviors';
 import { LOCOMOTION_STYLES, type LocomotionStyle } from './locomotion';
 import type { NavigationMode } from './navigation';
@@ -10,6 +11,7 @@ import { createNatureScene } from './nature-scene';
 import type { MovementMode } from './app-types';
 import { XREnvironment } from './xr-environment';
 import { endGizmoDrag } from './preview-controls';
+import { PreviewCamera } from './preview-camera';
 
 function element<T extends HTMLElement>(id: string): T {
   const value = document.getElementById(id);
@@ -106,6 +108,7 @@ async function bootstrap(): Promise<void> {
     loadVRMButton.after(demoButton);
     demoButton.addEventListener('click', () => {
       finishInteraction();
+      setFirstPerson(false);
       character.useDemoCharacter(createDemoCharacter); character.place(new THREE.Vector3());
       tour = false; stationRunning = false; updatePreviewControls(); updateMaterialStatus(); updateGizmo(); updateModelControls();
       statusCopy.textContent = '开发用关节测试角色';
@@ -134,8 +137,19 @@ async function bootstrap(): Promise<void> {
   let pathRefresh = 0;
   let simulationPaused = false;
   const followCamera = element<HTMLInputElement>('follow-camera');
+  const firstPerson = element<HTMLInputElement>('first-person');
+  const firstPersonForward = element<HTMLInputElement>('first-person-forward');
+  const firstPersonHeight = element<HTMLInputElement>('first-person-height');
+  const armSpread = element<HTMLInputElement>('arm-spread');
+  const previewCamera = new PreviewCamera(camera);
+  const orbit = new OrbitControls(camera, canvas);
+  orbit.enabled = false;
+  orbit.enablePan = false;
+  orbit.minDistance = 0.5;
+  orbit.maxDistance = 16;
+  const headPosition = new THREE.Vector3();
   const simulationSpeed = element<HTMLSelectElement>('simulation-speed');
-  let previousCharacterPosition = character.position.clone();
+  previewCamera.rebaseFollow(character.position);
   let transformStart: THREE.Vector3 | null = null;
   let undoPosition: THREE.Vector3 | null = null;
   let canvasPointer: number | null = null;
@@ -169,17 +183,23 @@ async function bootstrap(): Promise<void> {
   renderer.setAnimationLoop((time, frame) => {
     timer.update();
     const delta = Math.min(timer.getDelta(), 0.05);
-    if (!renderer.xr.isPresenting) updateFreeCamera(delta);
-    const activeCamera = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+    const presenting = renderer.xr.isPresenting;
+    if (!presenting && !followCamera.checked && !previewCamera.firstPerson) updateFreeCamera(delta);
+    const activeCamera = presenting ? renderer.xr.getCamera() : camera;
     xrEnvironment.update(time, frame, xrReferenceSpace, activeCamera, hitTestSource, nature.colliders);
     const worldMeshes = renderer.xr.isPresenting ? xrEnvironment.colliders : nature.colliders;
     const simulationDelta = renderer.xr.isPresenting ? delta : simulationPaused ? 0 : delta * Number(simulationSpeed.value);
-    if (simulationDelta > 0) character.update(simulationDelta, activeCamera, xrEnvironment.cursor.valid ? xrEnvironment.cursor.position : null, { meshes: worldMeshes });
-    updateTour(simulationDelta);
-    if (!renderer.xr.isPresenting && followCamera.checked && !gizmo.dragging && character.loaded) {
-      camera.position.add(character.position.clone().sub(previousCharacterPosition));
+    if (simulationDelta > 0) {
+      character.update(simulationDelta, activeCamera, xrEnvironment.cursor.valid ? xrEnvironment.cursor.position : null,
+        { meshes: worldMeshes }, presenting ? undefined : previewCamera.observerPosition);
     }
-    previousCharacterPosition.copy(character.position);
+    updateTour(simulationDelta);
+    if (!presenting && previewCamera.firstPerson) updateFirstPersonCamera();
+    if (!presenting && followCamera.checked && !previewCamera.firstPerson && character.loaded) {
+      if (!gizmo.dragging) previewCamera.follow(character.position, orbit.target);
+    } else if (!previewCamera.firstPerson) {
+      previewCamera.rebaseFollow(character.position);
+    }
     pathRefresh += delta;
     if (pathRefresh > 0.15) {
       pathRefresh = 0;
@@ -219,6 +239,7 @@ async function bootstrap(): Promise<void> {
     element<HTMLInputElement>('gizmo-snap').addEventListener('change', event => gizmo.setTranslationSnap((event.target as HTMLInputElement).checked ? 0.25 : null));
     gizmo.addEventListener('dragging-changed', event => {
       clearMovementInput();
+      syncOrbitControls();
       if (event.value) {
         transformStart = character.position.clone(); character.beginManipulation();
       } else {
@@ -242,6 +263,18 @@ async function bootstrap(): Promise<void> {
     followCamera.addEventListener('change', () => {
       if (playerDependentBehavior()) { followCamera.checked = false; toast('此行为用自由相机代表玩家，请使用 WASD 移动相机'); }
       else if (followCamera.checked) focusCharacter();
+      syncOrbitControls();
+    });
+    firstPerson.addEventListener('change', () => setFirstPerson(firstPerson.checked));
+    for (const offset of [firstPersonForward, firstPersonHeight]) {
+      offset.addEventListener('input', () => {
+        element<HTMLOutputElement>(`${offset.id}-value`).value = `${Number(offset.value).toFixed(2)} m`;
+        updateFirstPersonCamera();
+      });
+    }
+    armSpread.addEventListener('input', () => {
+      character.setArmSpread(Number(armSpread.value));
+      element<HTMLOutputElement>('arm-spread-value').value = `${armSpread.value}°`;
     });
     element('undo-transform').addEventListener('click', () => {
       finishInteraction();
@@ -252,6 +285,7 @@ async function bootstrap(): Promise<void> {
     canvas.addEventListener('pointerdown', event => {
       if (!event.isPrimary || event.button !== 0) { event.stopImmediatePropagation(); return; }
       canvasPointer = event.pointerId;
+      if (gizmo.enabled && gizmo.axis) orbit.enabled = false;
     }, true);
     canvas.addEventListener('pointercancel', finishInteraction);
     canvas.addEventListener('lostpointercapture', finishInteraction);
@@ -270,7 +304,7 @@ async function bootstrap(): Promise<void> {
 
   function updateGizmo(): void {
     finishInteraction();
-    gizmo.enabled = gizmoEnabled.checked && !renderer.xr.isPresenting && character.loaded;
+    gizmo.enabled = gizmoEnabled.checked && !renderer.xr.isPresenting && !previewCamera.firstPerson && character.loaded;
     if (gizmo.enabled) gizmo.attach(character.root); else gizmo.detach();
   }
 
@@ -291,18 +325,58 @@ async function bootstrap(): Promise<void> {
     return ['follow-player', 'follow-cursor', 'escort', 'flee', 'approach-retreat', 'guard'].includes(character.mode);
   }
 
+  function syncOrbitControls(): void {
+    orbit.enabled = followCamera.checked && !previewCamera.firstPerson && !renderer.xr.isPresenting && !gizmo.dragging;
+    if (!orbit.enabled && !previewCamera.firstPerson) {
+      camera.rotation.reorder('YXZ');
+      yaw = camera.rotation.y;
+      pitch = camera.rotation.x;
+    }
+  }
+
+  function updateFirstPersonCamera(): void {
+    if (!previewCamera.firstPerson) return;
+    const head = character.getFirstPersonHead(headPosition);
+    if (head) previewCamera.updateFirstPerson(head, character.root.rotation.y, Number(firstPersonForward.value), Number(firstPersonHeight.value));
+  }
+
+  function setFirstPerson(enabled: boolean): void {
+    firstPerson.checked = enabled && character.hasVRM && !renderer.xr.isPresenting;
+    if (firstPerson.checked && !previewCamera.firstPerson) {
+      previewCamera.rebaseFollow(character.position);
+      previewCamera.enterFirstPerson();
+    } else if (!firstPerson.checked && previewCamera.firstPerson) {
+      previewCamera.exitFirstPerson();
+      if (followCamera.checked) previewCamera.follow(character.position, orbit.target);
+    }
+    element('first-person-settings').hidden = !firstPerson.checked;
+    followCamera.disabled = firstPerson.checked || !character.loaded;
+    updateGizmo();
+    syncOrbitControls();
+    updateFirstPersonCamera();
+  }
+
   function focusCharacter(): void {
     if (!character.loaded || renderer.xr.isPresenting) return;
+    if (previewCamera.firstPerson) {
+      previewCamera.resetLook();
+      updateFirstPersonCamera();
+      return;
+    }
     const target = character.position.clone().add(new THREE.Vector3(0, character.effectiveHeight * 0.55, 0));
     camera.position.copy(target).add(new THREE.Vector3(3.2, 1.25, 3.2));
+    orbit.target.copy(target);
     camera.lookAt(target); camera.rotation.order = 'YXZ'; yaw = camera.rotation.y; pitch = camera.rotation.x;
-    previousCharacterPosition.copy(character.position);
+    previewCamera.rebaseFollow(character.position);
   }
 
   function updateModelControls(): void {
     for (const id of ['place-character', 'jump', 'start-station', 'tour-stations', 'target-cursor', 'stop-behavior', 'focus-character', 'pause-simulation', 'behavior-mode', 'locomotion-style', 'gizmo-enabled', 'gizmo-snap', 'follow-camera']) {
       (element(id) as HTMLButtonElement | HTMLSelectElement | HTMLInputElement).disabled = !character.loaded;
     }
+    firstPerson.disabled = !character.hasVRM;
+    armSpread.disabled = !character.loaded;
+    followCamera.disabled = previewCamera.firstPerson || !character.loaded;
   }
 
   function updateMaterialStatus(): void {
@@ -336,12 +410,18 @@ async function bootstrap(): Promise<void> {
       character.setMode(station.behavior as MovementMode, station.waypoints[1] ?? null);
     } else character.startRoute(station.waypoints, station.traversal);
     behaviorSelect.value = character.mode; updateBehaviorDescription();
-    camera.position.copy(station.cameraPosition);
-    camera.lookAt(station.waypoints[0].clone().add(new THREE.Vector3(0, 0.8, 0)));
-    camera.rotation.order = 'YXZ'; yaw = camera.rotation.y; pitch = camera.rotation.x;
+    if (!previewCamera.firstPerson) {
+      orbit.target.copy(station.waypoints[0]).add(new THREE.Vector3(0, 0.8, 0));
+      camera.position.copy(station.cameraPosition);
+      camera.lookAt(orbit.target);
+      camera.rotation.reorder('YXZ'); yaw = camera.rotation.y; pitch = camera.rotation.x;
+    }
     if (playerDependentBehavior()) followCamera.checked = false;
-    previousCharacterPosition.copy(character.position);
-    if (followCamera.checked) focusCharacter();
+    if (!previewCamera.firstPerson) {
+      previewCamera.rebaseFollow(character.position);
+      if (followCamera.checked) focusCharacter();
+    }
+    syncOrbitControls();
     stationElapsed = 0; stationRunning = true;
     statusCopy.textContent = station.label + ' · ' + station.description;
   }
@@ -503,8 +583,10 @@ async function bootstrap(): Promise<void> {
         },
       };
       xrSession = await navigator.xr.requestSession('immersive-ar', sessionInit);
+      setFirstPerson(false);
       xrSession.addEventListener('end', onXREnded, { once: true });
       await renderer.xr.setSession(xrSession);
+      syncOrbitControls();
       xrReferenceSpace = renderer.xr.getReferenceSpace();
       const viewerSpace = await xrSession.requestReferenceSpace('viewer');
       if (!xrSession.requestHitTestSource) throw new Error('浏览器未开放 WebXR Hit Test');
@@ -541,7 +623,7 @@ async function bootstrap(): Promise<void> {
     document.body.classList.remove('in-ar');
     nature.group.visible = true;
     character.place(new THREE.Vector3(0, 0, 0));
-    queueMicrotask(updateGizmo);
+    queueMicrotask(() => { updateGizmo(); syncOrbitControls(); });
     scene.background = new THREE.Color(0x87c9c4);
     scene.fog = new THREE.FogExp2(0x87c9c4, 0.035);
     runtimeLabel.textContent = '桌面调试场景';
@@ -611,7 +693,7 @@ async function bootstrap(): Promise<void> {
     let previousY = 0;
     canvas.addEventListener('pointerdown', event => {
       if (!event.isPrimary || event.button !== 0) return;
-      if (renderer.xr.isPresenting || gizmo.dragging || (gizmo.enabled && gizmo.axis)) return;
+      if (renderer.xr.isPresenting || orbit.enabled || gizmo.dragging || (gizmo.enabled && gizmo.axis)) return;
       lookPointer = event.pointerId;
       previousX = event.clientX;
       previousY = event.clientY;
@@ -619,17 +701,26 @@ async function bootstrap(): Promise<void> {
     });
     canvas.addEventListener('pointermove', event => {
       if (lookPointer !== event.pointerId || renderer.xr.isPresenting || gizmo.dragging) return;
-      yaw -= (event.clientX - previousX) * 0.004;
-      pitch -= (event.clientY - previousY) * 0.004;
-      pitch = THREE.MathUtils.clamp(pitch, -1.25, 1.1);
+      const deltaX = event.clientX - previousX;
+      const deltaY = event.clientY - previousY;
       previousX = event.clientX;
       previousY = event.clientY;
+      if (previewCamera.firstPerson) {
+        previewCamera.look(deltaX, deltaY);
+        updateFirstPersonCamera();
+        return;
+      }
+      yaw -= deltaX * 0.004;
+      pitch -= deltaY * 0.004;
+      pitch = THREE.MathUtils.clamp(pitch, -1.25, 1.1);
       updateCameraRotation();
     });
     const release = (event: PointerEvent) => { if (event.pointerId === lookPointer) lookPointer = null; };
     canvas.addEventListener('pointerup', release);
     canvas.addEventListener('pointercancel', release);
     canvas.addEventListener('lostpointercapture', release);
+    canvas.addEventListener('pointerup', syncOrbitControls);
+    canvas.addEventListener('pointercancel', syncOrbitControls);
   }
 
   function updateFreeCamera(delta: number): void {
@@ -670,6 +761,7 @@ async function bootstrap(): Promise<void> {
     tour = false; stationRunning = false;
     character.setMode(mode, xrEnvironment.cursor.valid ? xrEnvironment.cursor.position : null);
     if (playerDependentBehavior()) followCamera.checked = false;
+    syncOrbitControls();
     behaviorSelect.value = mode;
     updateBehaviorDescription();
   }
