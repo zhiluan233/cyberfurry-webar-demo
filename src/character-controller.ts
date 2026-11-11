@@ -13,6 +13,7 @@ import { ProceduralLocomotion, LOCOMOTION_STYLES, type FootSurface, type FootSup
 import { setLegacyShadeCompatibility } from './material-compat';
 import type { CollisionWorld, DemoConfig, MotionState, MovementMode } from './app-types';
 import { ArmSpread } from './arm-spread';
+import { ExpressionPreview } from './expression-preview';
 import { FIRST_PERSON_LAYER, THIRD_PERSON_LAYER } from './preview-camera';
 import { sampleRigContacts } from './rig-contacts';
 
@@ -50,6 +51,7 @@ export class CharacterController {
   motionState: MotionState = 'idle';
 
   private vrm: VRM | null = null;
+  private expressionPreview: ExpressionPreview | null = null;
   private mixer: THREE.AnimationMixer | null = null;
   private actions: Partial<Record<MotionState, THREE.AnimationAction>> = {};
   private currentAction: THREE.AnimationAction | null = null;
@@ -73,6 +75,7 @@ export class CharacterController {
   get capsuleRadius(): number { return this.config.character.capsule.radiusMeters; }
   get capsuleHeight(): number { return this.config.character.capsule.heightMeters; }
   get hasVRM(): boolean { return this.vrm !== null; }
+  get expressions(): ExpressionPreview | null { return this.loaded ? this.expressionPreview : null; }
   get navigationMode(): NavigationMode { return this.navigator.mode; }
   get routeActive(): boolean { return this.route !== null; }
   get effectiveHeight(): number {
@@ -112,6 +115,7 @@ export class CharacterController {
 
       if (this.demoScene) { this.root.remove(this.demoScene); VRMUtils.deepDispose(this.demoScene); this.demoScene = null; }
       this.vrm = nextVrm;
+      this.expressionPreview = nextVrm.expressionManager ? new ExpressionPreview(nextVrm.expressionManager) : null;
       this.repairedMaterialCount = setLegacyShadeCompatibility(nextVrm.scene, this.shadeCompatibility, nextVrm.meta?.metaVersion === '0');
       VRMUtils.removeUnnecessaryVertices(nextVrm.scene);
       VRMUtils.combineSkeletons(nextVrm.scene);
@@ -211,7 +215,7 @@ export class CharacterController {
     this.mixer?.stopAllAction();
     if (this.vrm) { this.root.remove(this.vrm.scene); VRMUtils.deepDispose(this.vrm.scene); }
     if (this.demoScene) { this.root.remove(this.demoScene); VRMUtils.deepDispose(this.demoScene); }
-    this.vrm = null; this.mixer = null; this.actions = {}; this.currentAction = null;
+    this.vrm = null; this.expressionPreview = null; this.mixer = null; this.actions = {}; this.currentAction = null;
     const demo = factory();
     this.normalizeVisualSize(demo.scene);
     this.demoScene = demo.scene;

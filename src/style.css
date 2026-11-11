@@ -99,8 +99,8 @@ button:disabled { opacity: 0.42; cursor: not-allowed; }
 .badge.muted { color: #a9b9b1; background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.08); }
 .badge.warn { color: #ffe6a9; background: rgba(255,184,70,0.12); border-color: rgba(255,184,70,0.25); }
 
-.top-actions { display: flex; gap: 8px; }
-.top-actions button, .left-panel button {
+.top-actions { display: flex; flex-shrink: 0; gap: 8px; white-space: nowrap; }
+.top-actions button, .left-panel button, .expression-actions button {
   min-height: 40px;
   padding: 0 14px;
   border-radius: 12px;
@@ -109,7 +109,7 @@ button:disabled { opacity: 0.42; cursor: not-allowed; }
   font-weight: 700;
   font-size: 12px;
 }
-.top-actions button:hover, .left-panel button:hover { background: rgba(255,255,255,0.13); }
+.top-actions button:hover, .left-panel button:hover, .expression-actions button:hover { background: rgba(255,255,255,0.13); }
 .top-actions .primary, .left-panel .accent {
   color: #062016;
   background: linear-gradient(135deg, #9dffd0, #45e8a0);
@@ -143,7 +143,7 @@ button:disabled { opacity: 0.42; cursor: not-allowed; }
 .left-panel .mode.active { color: var(--mint); background: rgba(117,247,184,.12); border-color: rgba(117,247,184,.35); }
 #status-copy { color: #9ab6aa; line-height: 1.5; font-size: 11px; margin: 10px 2px 1px; }
 
-.debug-panel {
+.debug-panel, .expression-panel {
   position: absolute;
   top: calc(var(--safe-top) + 78px);
   right: var(--safe-right);
@@ -151,6 +151,24 @@ button:disabled { opacity: 0.42; cursor: not-allowed; }
   padding: 15px;
   border-radius: 19px;
 }
+.expression-panel {
+  display: flex;
+  flex-direction: column;
+  z-index: 4;
+  max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 78px);
+}
+.expression-panel[hidden] { display: none; }
+.expression-panel h2 { margin: 0 0 10px; font-size: 14px; }
+.expression-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.expression-actions .check-row { display: flex; align-items: center; gap: 6px; color: #c1e2d2; font-size: 12px; }
+.expression-actions button { min-height: 34px; padding: 0 10px; }
+.expression-keys { min-height: 0; overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y; scrollbar-width: thin; }
+.expression-key { display: grid; gap: 4px; padding: 9px 3px 6px; border-top: 1px solid var(--line); }
+.expression-key:first-child { margin-top: 9px; }
+.expression-key-heading { display: flex; align-items: baseline; gap: 7px; font-size: 12px; overflow-wrap: anywhere; }
+.expression-key-heading small { color: #9fc7b5; font-size: 10px; white-space: nowrap; }
+.expression-value { margin-left: auto; color: var(--mint); font-variant-numeric: tabular-nums; }
+.expression-key input { width: 100%; margin: 0; accent-color: var(--mint-strong); }
 .debug-heading, .debug-panel label > span, .debug-stats { display: flex; align-items: center; justify-content: space-between; }
 .debug-heading { margin-bottom: 13px; }
 .debug-heading strong { font-size: 13px; }
@@ -222,7 +240,8 @@ button:disabled { opacity: 0.42; cursor: not-allowed; }
 
 @media (max-width: 720px) {
   .topbar { min-height: 56px; gap: 8px; padding: 8px 9px 8px 12px; border-radius: 16px; }
-  .brand-mark { width: 23px; height: 23px; }
+  .brand { min-width: 0; }
+  .brand-mark { width: 23px; height: 23px; flex-shrink: 0; }
   .brand strong { font-size:12px; }
   .brand small, .badges { display:none; }
   .top-actions { margin-left:auto; }
@@ -233,11 +252,17 @@ button:disabled { opacity: 0.42; cursor: not-allowed; }
   .mode-grid { gap:5px; }
   .left-panel .mode { min-height:34px; font-size:10px; }
   .section-label { margin-top:6px; }
-  .debug-panel { top:calc(var(--safe-top) + 68px); }
+  .debug-panel, .expression-panel { top:calc(var(--safe-top) + 68px); }
+  .expression-panel { max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 68px); }
   .desktop-help { display:none; }
   .joystick { width:116px; height:116px; }
   .joystick-knob { left:36px; top:36px; width:44px; height:44px; }
   .jump-button { width:66px; height:66px; right:calc(var(--safe-right) + 8px); }
+}
+
+@media (max-width: 420px) {
+  .top-actions { gap: 5px; }
+  .top-actions button { padding-inline: 8px; }
 }
 
 @media (max-height: 580px) {

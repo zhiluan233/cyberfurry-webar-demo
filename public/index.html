@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
     <meta name="theme-color" content="#07130f" />
     <title>FurryAR SE</title>
-    <script type="module" crossorigin src="/assets/app/index-BnIZTEb1.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/app/index-E751A7U2.css">
+    <script type="module" crossorigin src="/assets/app/index-vVJ5cw0e.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/app/index-C5E61p3z.css">
   </head>
   <body>
     <canvas id="stage" aria-label="WebXR Scene Session"></canvas>
@@ -25,10 +25,21 @@
           <span id="depth-badge" class="badge muted">深度未知</span>
         </div>
         <div class="top-actions">
+          <button id="expression-toggle" class="icon-button" type="button" aria-expanded="false" aria-controls="expression-panel">表情</button>
           <button id="debug-toggle" class="icon-button" type="button" aria-expanded="false" aria-controls="debug-panel">调试</button>
           <button id="start-ar" class="primary" type="button">启动 AR</button>
         </div>
       </header>
+
+      <section id="expression-panel" class="expression-panel glass" aria-labelledby="expression-heading" hidden>
+        <h2 id="expression-heading">角色表情</h2>
+        <div class="expression-actions">
+          <label class="check-row"><input id="expression-speech" type="checkbox" disabled /> 说话测试</label>
+          <button id="expression-reset" type="button" disabled>恢复默认</button>
+        </div>
+        <p id="expression-status" class="preview-status" role="status">请先载入 VRM 角色</p>
+        <div id="expression-keys" class="expression-keys"></div>
+      </section>
 
       <section class="left-panel glass" aria-label="角色与行为">
         <input id="vrm-input" type="file" accept=".vrm,.glb,model/gltf-binary" hidden />

@@ -31,6 +31,12 @@ const stopVRMAButton = element<HTMLButtonElement>('stop-vrma');
 const vrmaStatus = element<HTMLElement>('vrma-status');
 const placeButton = element<HTMLButtonElement>('place-character');
 const jumpButton = element<HTMLButtonElement>('jump');
+const expressionToggle = element<HTMLButtonElement>('expression-toggle');
+const expressionPanel = element<HTMLElement>('expression-panel');
+const expressionSpeech = element<HTMLInputElement>('expression-speech');
+const expressionReset = element<HTMLButtonElement>('expression-reset');
+const expressionStatus = element<HTMLElement>('expression-status');
+const expressionKeys = element<HTMLElement>('expression-keys');
 const debugToggle = element<HTMLButtonElement>('debug-toggle');
 const debugPanel = element<HTMLElement>('debug-panel');
 const radiusInput = element<HTMLInputElement>('capsule-radius');
@@ -99,6 +105,7 @@ async function bootstrap(): Promise<void> {
   nature.group.updateMatrixWorld(true);
   const xrEnvironment = new XREnvironment(scene, config);
   const character = new CharacterController(scene, config, toast);
+  let displayedExpressions: CharacterController['expressions'];
   // Vite removes this branch and its dynamic import from production entirely.
   if (import.meta.env.DEV) {
     const { createDemoCharacter } = await import('./demo-character');
@@ -194,6 +201,7 @@ async function bootstrap(): Promise<void> {
       character.update(simulationDelta, activeCamera, xrEnvironment.cursor.valid ? xrEnvironment.cursor.position : null,
         { meshes: worldMeshes }, presenting ? undefined : previewCamera.observerPosition);
     }
+    character.expressions?.update(delta);
     updateTour(simulationDelta);
     if (!presenting && previewCamera.firstPerson) updateFirstPersonCamera();
     if (!presenting && followCamera.checked && !previewCamera.firstPerson && character.loaded) {
@@ -380,6 +388,58 @@ async function bootstrap(): Promise<void> {
     armSpread.disabled = !character.loaded;
     proceduralBounce.disabled = !character.loaded;
     followCamera.disabled = previewCamera.firstPerson || !character.loaded;
+    updateExpressionPanel();
+  }
+
+  function updateExpressionPanel(resetControls = false): void {
+    const preview = character.expressions;
+    if (preview && preview === displayedExpressions && !resetControls) return;
+    displayedExpressions = preview;
+    expressionKeys.replaceChildren();
+    expressionSpeech.checked = false;
+    expressionSpeech.disabled = !preview?.canSpeak;
+    expressionReset.disabled = !preview?.keys.length;
+    expressionStatus.hidden = Boolean(preview?.canSpeak);
+    expressionStatus.textContent = preview?.keys.length ? '该角色没有可用于说话测试的口型键'
+      : character.loaded && character.hasVRM ? '该角色没有表情键' : '请先载入 VRM 角色';
+    if (!preview) return;
+
+    for (const { name, preset } of preview.keys) {
+      const row = document.createElement('label');
+      row.className = 'expression-key';
+      const heading = document.createElement('span');
+      heading.className = 'expression-key-heading';
+      const title = document.createElement('span');
+      title.textContent = name;
+      const kind = document.createElement('small');
+      kind.textContent = preset ? '官方' : '自定义';
+      const percentage = document.createElement('span');
+      percentage.className = 'expression-value';
+      percentage.setAttribute('aria-hidden', 'true');
+      percentage.textContent = '0%';
+      heading.append(title, kind, percentage);
+
+      const slider = document.createElement('input');
+      slider.type = 'range';
+      slider.min = '0';
+      slider.max = '100';
+      slider.value = '0';
+      slider.addEventListener('input', () => {
+        percentage.textContent = `${slider.value}%`;
+        preview.setWeight(name, slider.valueAsNumber / 100);
+      });
+      row.append(heading, slider);
+      expressionKeys.append(row);
+    }
+  }
+
+  function setExpressionPanelOpen(open: boolean): void {
+    expressionPanel.hidden = !open;
+    expressionToggle.setAttribute('aria-expanded', String(open));
+    if (open) {
+      debugPanel.hidden = true;
+      debugToggle.setAttribute('aria-expanded', 'false');
+    }
   }
 
   function updateMaterialStatus(): void {
@@ -493,6 +553,7 @@ async function bootstrap(): Promise<void> {
         loadingElement.hidden = true;
         vrmInput.value = '';
         updatePreviewControls();
+        updateExpressionPanel();
       }
     });
 
@@ -540,9 +601,19 @@ async function bootstrap(): Promise<void> {
 
     jumpButton.addEventListener('click', () => character.jump());
 
+    expressionToggle.addEventListener('click', () => setExpressionPanelOpen(expressionPanel.hidden));
+    expressionSpeech.addEventListener('change', () => {
+      const preview = character.expressions;
+      if (preview) preview.speaking = expressionSpeech.checked;
+    });
+    expressionReset.addEventListener('click', () => {
+      character.expressions?.reset();
+      updateExpressionPanel(true);
+    });
     debugToggle.addEventListener('click', () => {
       debugPanel.hidden = !debugPanel.hidden;
       debugToggle.setAttribute('aria-expanded', String(!debugPanel.hidden));
+      if (!debugPanel.hidden) setExpressionPanelOpen(false);
     });
     radiusInput.addEventListener('input', updateCapsuleFromPanel);
     heightInput.addEventListener('input', updateCapsuleFromPanel);
@@ -679,6 +750,12 @@ async function bootstrap(): Promise<void> {
   function setupCameraControls(): void {
     addEventListener('keydown', event => {
       if (event.code === 'Escape' && gizmo.dragging) { gizmo.reset(); finishInteraction(); event.preventDefault(); return; }
+      if (event.code === 'Escape' && !expressionPanel.hidden) {
+        setExpressionPanelOpen(false);
+        expressionToggle.focus();
+        event.preventDefault();
+        return;
+      }
       if (gizmo.dragging) { if (event.code.startsWith('Arrow')) event.preventDefault(); return; }
       if ((event.target as HTMLElement)?.matches('input, select, button, textarea')) return;
       pressedKeys.add(event.code);
